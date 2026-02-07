@@ -1,0 +1,224 @@
+import * as THREE from 'three';
+import { PlayerRole, RoundState, GAME_CONFIG } from '../config/constants';
+
+/**
+ * Player state data
+ */
+export interface PlayerState {
+  peerId: string;
+  role: PlayerRole;
+  position: THREE.Vector3;
+  rotation: THREE.Euler;
+  velocity: THREE.Vector3;
+
+  // Pigeon-specific
+  weight?: number;
+
+  // Hawk-specific
+  energy?: number;
+
+  // Common
+  isEating?: boolean;
+  eatingTimer?: number;
+}
+
+/**
+ * Food item state
+ */
+export interface FoodState {
+  id: string;
+  type: string;
+  position: THREE.Vector3;
+  exists: boolean; // false if eaten, waiting to respawn
+  respawnTimer?: number;
+}
+
+/**
+ * Score tracking
+ */
+export interface ScoreData {
+  pigeon: {
+    totalWeight: number;
+    roundsWon: number;
+  };
+  hawk: {
+    killTimes: number[];
+    roundsWon: number;
+  };
+}
+
+/**
+ * Centralized game state
+ */
+export class GameState {
+  // Match metadata
+  public matchId: string;
+  public roundNumber: number = 0;
+  public roundStartTime: number = 0;
+  public roundDuration: number = GAME_CONFIG.ROUND_DURATION;
+  public roundState: RoundState = RoundState.LOBBY;
+
+  // Network
+  public isHost: boolean;
+  public localPeerId: string;
+  public remotePeerId: string | null = null;
+
+  // Players
+  public players: Map<string, PlayerState> = new Map();
+
+  // World
+  public foods: Map<string, FoodState> = new Map();
+
+  // Scores
+  public scores: ScoreData = {
+    pigeon: { totalWeight: 0, roundsWon: 0 },
+    hawk: { killTimes: [], roundsWon: 0 },
+  };
+
+  constructor(isHost: boolean, localPeerId: string) {
+    this.isHost = isHost;
+    this.localPeerId = localPeerId;
+    this.matchId = this.generateMatchId();
+  }
+
+  /**
+   * Generate unique match ID
+   */
+  private generateMatchId(): string {
+    return `match-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Get local player state
+   */
+  public getLocalPlayer(): PlayerState | undefined {
+    return this.players.get(this.localPeerId);
+  }
+
+  /**
+   * Get remote player state
+   */
+  public getRemotePlayer(): PlayerState | undefined {
+    if (!this.remotePeerId) return undefined;
+    return this.players.get(this.remotePeerId);
+  }
+
+  /**
+   * Add a player to the game
+   */
+  public addPlayer(peerId: string, role: PlayerRole, position?: THREE.Vector3): PlayerState {
+    const playerState: PlayerState = {
+      peerId,
+      role,
+      position: position || new THREE.Vector3(0, 5, 0),
+      rotation: new THREE.Euler(0, 0, 0),
+      velocity: new THREE.Vector3(0, 0, 0),
+      weight: role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined,
+      energy: role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined,
+      isEating: false,
+      eatingTimer: 0,
+    };
+
+    this.players.set(peerId, playerState);
+    return playerState;
+  }
+
+  /**
+   * Start a new round
+   */
+  public startRound(): void {
+    this.roundNumber++;
+    this.roundStartTime = Date.now();
+    this.roundState = RoundState.PLAYING;
+
+    // Reset player states
+    this.players.forEach((player) => {
+      player.weight = player.role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
+      player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
+      player.isEating = false;
+      player.eatingTimer = 0;
+    });
+  }
+
+  /**
+   * End the current round
+   */
+  public endRound(): void {
+    this.roundState = RoundState.ENDED;
+  }
+
+  /**
+   * Swap player roles for next round
+   */
+  public swapRoles(): void {
+    this.players.forEach((player) => {
+      player.role = player.role === PlayerRole.PIGEON ? PlayerRole.HAWK : PlayerRole.PIGEON;
+      player.weight = player.role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
+      player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
+    });
+  }
+
+  /**
+   * Get elapsed round time in seconds
+   */
+  public getRoundTime(): number {
+    if (this.roundState !== RoundState.PLAYING) return 0;
+    return (Date.now() - this.roundStartTime) / 1000;
+  }
+
+  /**
+   * Get remaining round time in seconds
+   */
+  public getRemainingTime(): number {
+    const elapsed = this.getRoundTime();
+    return Math.max(0, this.roundDuration - elapsed);
+  }
+
+  /**
+   * Check if round timer has expired
+   */
+  public isRoundTimeUp(): boolean {
+    return this.getRemainingTime() <= 0;
+  }
+
+  /**
+   * Add food item to the world
+   */
+  public addFood(id: string, type: string, position: THREE.Vector3): FoodState {
+    const food: FoodState = {
+      id,
+      type,
+      position: position.clone(),
+      exists: true,
+      respawnTimer: 0,
+    };
+    this.foods.set(id, food);
+    return food;
+  }
+
+  /**
+   * Remove food (when eaten)
+   */
+  public removeFood(id: string): void {
+    const food = this.foods.get(id);
+    if (food) {
+      food.exists = false;
+      food.respawnTimer = GAME_CONFIG.FOOD_RESPAWN_TIME;
+    }
+  }
+
+  /**
+   * Update food respawn timers
+   */
+  public updateFoodTimers(deltaTime: number): void {
+    this.foods.forEach((food) => {
+      if (!food.exists && food.respawnTimer !== undefined) {
+        food.respawnTimer -= deltaTime;
+        if (food.respawnTimer <= 0) {
+          food.exists = true;
+          food.respawnTimer = 0;
+        }
+      }
+    });
+  }
+}
