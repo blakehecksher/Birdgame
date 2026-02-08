@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PlayerRole, RoundState, GAME_CONFIG } from '../config/constants';
+import { NPCState, NPCType } from '../entities/NPC';
 
 /**
  * Player state data
@@ -30,6 +31,19 @@ export interface FoodState {
   type: string;
   position: THREE.Vector3;
   exists: boolean; // false if eaten, waiting to respawn
+  respawnTimer?: number;
+}
+
+/**
+ * NPC item state
+ */
+export interface NPCStateData {
+  id: string;
+  type: NPCType;
+  position: THREE.Vector3;
+  rotation: number;
+  state: NPCState;
+  exists: boolean;
   respawnTimer?: number;
 }
 
@@ -68,6 +82,7 @@ export class GameState {
 
   // World
   public foods: Map<string, FoodState> = new Map();
+  public npcs: Map<string, NPCStateData> = new Map();
 
   // Scores
   public scores: ScoreData = {
@@ -219,6 +234,24 @@ export class GameState {
           food.respawnTimer = 0;
         }
       }
+    });
+  }
+
+  /**
+   * Replace all NPC states from host-authoritative snapshot.
+   */
+  public setNPCSnapshots(snapshots: NPCStateData[]): void {
+    this.npcs.clear();
+    snapshots.forEach((npc) => {
+      this.npcs.set(npc.id, {
+        id: npc.id,
+        type: npc.type,
+        position: npc.position.clone(),
+        rotation: npc.rotation,
+        state: npc.state,
+        exists: npc.exists,
+        respawnTimer: npc.respawnTimer ?? 0,
+      });
     });
   }
 }

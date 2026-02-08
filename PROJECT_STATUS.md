@@ -274,6 +274,349 @@ Building a web-based 3D multiplayer chase game where two players compete as a pi
 
 ---
 
+### Session Log (Feb 8, 2026 - Codex, Post-Claude Takeover)
+
+**Focus:** Flight feel overhaul, control simplification, role-specific tuning, and hitbox/visual-size consistency.
+
+**Movement + Controls (implemented):**
+- Reworked flight to airplane-style inputs:
+  - `Mouse Y` controls pitch only
+  - `A/D` control roll (bank) only
+  - `W` provides forward thrust only
+  - No direct yaw input from mouse; yaw comes from bank-turn coupling
+  - Removed backward thrust (`S`) from active movement mapping
+- Added explicit quaternion attitude composition in `Player.applyMeshRotation()` to separate yaw/pitch/roll cleanly and avoid Euler-order artifacts.
+- Added flight attitude indicator (center circle + moving dot) and aligned indicator direction with actual pitch behavior.
+- Added scroll-wheel camera zoom support.
+
+**Role-Specific Flight Tuning (implemented):**
+- Split pigeon/hawk pitch and bank tuning into independent constants:
+  - Pitch sensitivity and max pitch per role
+  - Bank acceleration, spring stiffness, damping, and max bank angle per role
+  - Existing per-role bank-turn coupling retained
+- Updated flight system to use role-specific values at runtime.
+- Reorganized `src/config/constants.ts` so `PIGEON_*` and `HAWK_*` parameters are grouped for easier tuning.
+
+**Collision/Size Consistency (implemented):**
+- Added `Player.setVisualScale(scale)` as the single scale path.
+- Collision radius now scales with visual scale (`radius = baseRadius * scale`).
+- Pigeon growth now updates both mesh size and collision radius together.
+- Role resets now restore both scale and radius together.
+
+**Networking/Deployment Follow-through (completed during takeover window):**
+- Fixed room-link join normalization edge case (case-insensitive prefix handling) that could cause failed joins.
+- Confirmed/maintained GitHub Pages deployment workflow and documented `deploy` vs `commit/push` behavior.
+
+**Validation:**
+- Type checks pass (`npx tsc --noEmit`) after the above changes.
+- Build/deploy command in this sandbox remains blocked by `spawn EPERM` environment limitation (not a TypeScript/code regression).
+
+---
+
+### 3D Model Integration (Feb 8, 2026 - Claude)
+
+**Focus:** Replace procedural bird meshes with GLB 3D models.
+
+**Completed:**
+- Created `ModelLoader` utility (`src/utils/ModelLoader.ts`) — preloads GLB files via `GLTFLoader`, caches and clones on demand
+- Updated `Player.ts` — constructor accepts optional `THREE.Group` model, added `swapModel()` for role-swap mesh replacement, per-instance `modelOffsetQ` (identity for GLB, +90° Y for procedural fallback)
+- Updated `Game.ts` — async `startGame()` preloads models before player creation, replaced `updateBirdColor()` with `swapPlayerModel()` using model swap
+- Added `src/vite-env.d.ts` for Vite type declarations
+- Copied models to `public/models/hawk.glb` and `public/models/pigeon.glb`
+
+**Files created:** `src/utils/ModelLoader.ts`, `src/vite-env.d.ts`, `public/models/hawk.glb`, `public/models/pigeon.glb`
+**Files modified:** `src/entities/Player.ts`, `src/core/Game.ts`
+
+---
+
+## Phase 3: Expanded World, NPC AI & Model Infrastructure
+
+### Overview
+
+Scale the game world from a 2x2 block city to a **10x10 randomly generated grid (~300x300 game units)**, add **NPC pigeons and rats** with simple AI as hawk food sources, and build infrastructure for loading GLB models for all game objects.
+
+### Confirmed Design Decisions
+- **Map scale:** ~300x300 game units (1 foot ≈ 0.3 units). `GROUND_SIZE: 400`.
+- **Map persistence:** Generated once per match from a shared seed. Same layout for all rounds.
+- **NPC coexistence:** Static food (crumbs, bagels, pizza, rats) stays for pigeon/hawk. NPC pigeons + NPC rats added as new hawk food alongside existing items.
+
+---
+
+### 3A. Seeded Random World Generation
+
+**Problem:** Current city is hardcoded 2x2 blocks. Need random layouts that are identical on both peers.
+
+**Solution:** Deterministic PRNG seeded from a shared `worldSeed`.
+
+**Implementation:**
+- New `src/utils/SeededRandom.ts` — mulberry32 PRNG with `next()`, `nextInt(min,max)`, `nextFloat(min,max)`, `pick(array)` methods
+- Host generates `worldSeed` (random integer) at match start
+- Seed sent to client via `GameStartMessage` (add `worldSeed: number` field to `messages.ts`)
+- `Environment.ts` accepts seed, uses PRNG for all random decisions
+- Both peers generate identical worlds without transmitting full map data
+
+**Files:** `src/utils/SeededRandom.ts` (NEW), `src/network/messages.ts` (UPDATE), `src/core/Game.ts` (UPDATE)
+
+---
+
+### 3B. 10x10 Grid City Layout
+
+**Grid parameters:**
+- 10x10 cells, each ~27 game units
+- Street width: ~3 units between cells
+- Total grid: 10×27 + 11×3 = 303 units
+- `GROUND_SIZE: 400` (buffer around city edge)
+
+**Cell assignment algorithm (seeded random):**
+1. Create 10x10 grid of cells
+2. Each cell randomly assigned BUILDING (~40%) or PARK (~60%)
+3. Edge row/column cells forced to PARK (open perimeter for flying)
+4. Constraint: no isolated building cells (must have at least one park neighbor)
+5. Streets run between every row and column of cells
+
+**Building cells:**
+- 1-2 buildings per cell
+- Height: 10.5–35 game units (3–10 stories × 3.5 units/story)
+- Random footprint within cell bounds
+- AABB collision, window overlays, deterministic color from PRNG
+
+**Park cells:**
+- 2-5 trees (random position within cell, trunk + canopy)
+- 0-2 benches (random position)
+- 1-3 lampposts (random position, new simple geometry)
+- Green ground plane per cell
+
+**Files:** `src/world/Environment.ts` (MAJOR REWRITE), `src/world/Building.ts` (UPDATE), `src/config/constants.ts` (UPDATE), `src/world/FoodSpawner.ts` (UPDATE — scatter food across park/street cells)
+
+**New constants:**
+```
+GROUND_SIZE: 400          GRID_SIZE: 10
+CELL_SIZE: 27             STREET_WIDTH: 3
+BUILDING_MIN_HEIGHT: 10.5 BUILDING_MAX_HEIGHT: 35
+BUILDING_CHANCE: 0.4      (40% of non-edge cells)
+```
+
+---
+
+### 3C. NPC Entity System
+
+**NPC Pigeons (10):**
+- Spawn in random park cells
+- AI state machine: IDLE (pecking, 2-4s) → WALKING (wander 2-4 units, 1-2s) → IDLE → repeat
+- Flee from hawk when within 15 units (run away for 3s then resume normal behavior)
+- Ground-level only (Y=0.3)
+- Hawk catches them for +8 energy
+- Respawn after 45s at a random park cell
+
+**NPC Rats (10):**
+- Spawn on street segments between cells
+- AI state machine: IDLE (1-3s) → SCURRY (fast burst 4-8 units along street, 0.5-1s) → IDLE → repeat
+- Flee from hawk when within 10 units
+- Ground-level only (Y=0.3)
+- Hawk catches them for +15 energy
+- Respawn after 30s at a random street location
+
+**Architecture:**
+- `src/entities/NPC.ts` — NPC entity with state machine (IDLE, WALKING/SCURRYING, FLEEING)
+- `src/world/NPCSpawner.ts` — manages NPC lifecycle: spawn, AI tick (host only), respawn
+- **Host-authoritative:** AI logic runs on host only. NPC positions synced to client via `STATE_SYNC` message (add `npcs` array). Client receives positions and renders meshes, no AI on client.
+- NPC collision with hawk checked same way as food collision (sphere-sphere)
+- New `NPC_KILLED` network event message (like `FOOD_COLLECTED`)
+
+**Files:** `src/entities/NPC.ts` (NEW), `src/world/NPCSpawner.ts` (NEW), `src/network/messages.ts` (UPDATE), `src/network/NetworkManager.ts` (UPDATE), `src/core/Game.ts` (UPDATE), `src/core/GameState.ts` (UPDATE), `src/physics/CollisionDetector.ts` (UPDATE)
+
+**New constants:**
+```
+NPC_PIGEON_COUNT: 10       NPC_RAT_COUNT: 10
+NPC_PIGEON_ENERGY: 8       NPC_RAT_ENERGY: 15
+NPC_PIGEON_RESPAWN: 45     NPC_RAT_RESPAWN: 30
+NPC_PIGEON_FLEE_RANGE: 15  NPC_RAT_FLEE_RANGE: 10
+NPC_PIGEON_SPEED: 2.0      NPC_RAT_SPEED: 4.0
+NPC_PIGEON_EAT_TIME: 1.5   NPC_RAT_EAT_TIME: 2.0
+```
+
+---
+
+### 3D. Model Loading Infrastructure
+
+**Goal:** Prepare the project to load GLB models for all game objects — not just birds.
+
+**Expanded `public/models/` structure:**
+```
+public/models/
+  birds/
+    hawk.glb              ← (existing, move from models/)
+    pigeon.glb            ← (existing, move from models/)
+  food/
+    bagel.glb             (future — user will provide)
+    pizza.glb             (future)
+    breadcrumb.glb        (future)
+    rat.glb               (future)
+  environment/
+    tree.glb              (future)
+    bench.glb             (future)
+    lamppost.glb          (future)
+  npcs/
+    npc_pigeon.glb        (future)
+    npc_rat.glb           (future)
+```
+
+**ModelLoader expansion (`src/utils/ModelLoader.ts`):**
+- `preload(manifest: string[])` — load a list of model paths
+- `get(key: string): THREE.Group | null` — get cached clone by key
+- Graceful fallback: all entities accept optional model, use procedural geometry when GLB not available
+- Models loaded during lobby/loading screen before game starts
+
+**Entity updates:** `Food.ts`, `NPC.ts`, `Building.ts` — all accept optional `THREE.Group` model parameter, fallback to procedural mesh.
+
+---
+
+### Implementation Order
+
+**Session A — Seeded Random + Map Expansion:**
+1. Create `SeededRandom.ts`
+2. Add `worldSeed` to `GameStartMessage`
+3. Rewrite `Environment.ts` for 10x10 seeded grid
+4. Update `constants.ts` with new map dimensions
+5. Update `Building.ts` for PRNG-driven sizing
+6. Update `FoodSpawner.ts` for grid-aware food placement
+7. Update `Game.ts` to pass seed to Environment
+8. Verify: `npx tsc --noEmit`, multiplayer test for identical worlds
+
+**Session B — NPC AI System:**
+1. Create `NPC.ts` with IDLE/WALKING/FLEEING state machine
+2. Create `NPCSpawner.ts` lifecycle manager
+3. Add NPC network messages (NPC_KILLED, npcs in STATE_SYNC)
+4. Update NetworkManager, GameState for NPC sync
+5. Integrate into Game.ts (host AI tick, hawk collision, client rendering)
+6. Verify: NPCs move, hawk catches them, energy works
+
+**Session C — Model Infrastructure Expansion:**
+1. Reorganize `public/models/` directory
+2. Expand `ModelLoader.ts` with manifest-based loading
+3. Update `Food.ts`, `NPC.ts` to accept optional GLB models
+4. Add procedural fallbacks for all entities
+5. Verify: models load when present, fallback when not
+
+---
+
+### Session A Complete (Feb 8, 2026 - Codex + Claude)
+
+**Status:** Complete
+
+**Summary of what was done:**
+- Added deterministic seeded world generation infrastructure (`SeededRandom`) and rewrote environment to 10x10 grid generation.
+- Expanded map architecture to large-city scale constants (`GROUND_SIZE`, `GRID_SIZE`, `CELL_SIZE`, `STREET_WIDTH`).
+- Implemented seeded `Environment(scene, seed)` generation with:
+  - building/park cell assignment
+  - deterministic tree/bench placement
+  - exported `parkCells` and `streetCenters` for spawning systems
+- Updated `FoodSpawner` to distribute food from map data instead of hardcoded positions.
+- Integrated world seed derivation in `Game.ts` from host peer ID (deterministic across peers, no extra seed message required).
+- Updated game startup and round reset spawn logic to use expanded map street-based spawn positions.
+- Type checks pass (`npx tsc --noEmit`).
+
+---
+
+### Session B Progress (Feb 8, 2026 - Codex)
+
+**Status:** In progress (core architecture wired)
+
+**Completed this pass:**
+- Added NPC gameplay constants to `GAME_CONFIG` (counts, flee ranges, speed, rewards, respawn, collision radius, eat times).
+- Upgraded `NPC.ts` with role-specific config usage, collision radius, reward/eat/respawn helpers, and seeded-random-capable behavior.
+- Upgraded `NPCSpawner.ts` with config-based behavior and snapshot helpers (`getNPC`, `getSnapshots`, `applySnapshots`).
+- Extended network protocol:
+  - Added `NPC_KILLED` event message
+  - Added `npcs` payload to `STATE_SYNC`
+- Extended `GameState` with authoritative NPC state map and snapshot replace method.
+- Extended `NetworkManager` to sync NPC snapshots and handle/send `NPC_KILLED`.
+- Integrated NPC lifecycle into `Game.ts`:
+  - spawn + host AI update
+  - host hawk-vs-NPC collision checks
+  - NPC state sync host->client
+  - client-side NPC snapshot application
+  - client handling of `NPC_KILLED` for immediate eat/energy feedback
+  - round reset + cleanup integration
+- Type checks pass after integration.
+
+**Remaining Session B validation work:**
+- Playtest host/client NPC behavior end-to-end in browser (movement, flee, kill, respawn timing).
+- Tune NPC movement values after first gameplay pass.
+
+---
+
+### Session B Update (Feb 8, 2026 - Codex)
+
+**Status:** Implemented prey reward + composition update
+
+**Completed:**
+- Increased hawk energy rewards from NPC prey to make hunting more meaningful:
+  - `NPC_PIGEON_ENERGY: 25`
+  - `NPC_RAT_ENERGY: 35`
+- Removed static floating rat food spawns from `FoodSpawner` so hawk ground prey now comes from moving NPCs only.
+- Added squirrel NPC prey:
+  - New type: `NPC_SQUIRREL`
+  - Brown fallback model, larger collision radius, park-cell spawning, scurrying/flee behavior
+  - Configured with dedicated constants for count, speed, flee range, eat time, respawn, and energy reward (`NPC_SQUIRREL_ENERGY: 50`)
+- Updated client-side `NPC_KILLED` handling in `Game.ts` so squirrel eat-time/energy reward is applied correctly for non-host views too.
+
+**Validation:**
+- Type checks pass (`npx tsc --noEmit`).
+
+---
+
+### Session C Progress (Feb 8, 2026 - Codex)
+
+**Status:** In progress (model infrastructure expanded + gameplay integration pass complete)
+
+**Completed this pass:**
+- Expanded model-loading infrastructure in `src/utils/ModelLoader.ts`:
+  - Added manifest-based preloading (`preloadModelManifest`)
+  - Added key-based retrieval (`getModelByKey`)
+  - Added optional model entries for food/NPC/environment placeholders (fallback-safe if files are missing)
+- Updated entities for model-first architecture with fallback support:
+  - `src/entities/Food.ts` now accepts optional GLB model and falls back to procedural meshes
+  - `src/world/Building.ts` now accepts optional model and falls back to procedural building + windows
+- Updated world integration to consume optional model keys where available:
+  - `src/world/Environment.ts` now requests optional building model via model key
+  - `src/world/NPCSpawner.ts` now requests optional NPC model keys for pigeon/rat/squirrel
+
+**Gameplay requests implemented in this same pass:**
+- NPC pigeons now fly in the air with swooping/sweeping motion (host-authoritative):
+  - airborne spawn altitude
+  - curved heading turns
+  - sinusoidal altitude profile
+- Squirrels are now predominantly tree-canopy spawns (configurable tree bias) with canopy-biased movement.
+- Added rooftop food distribution:
+  - rooftop bagels and pizza as high-value/high-risk pickups
+  - minimal rooftop crumbs
+  - supports "reward for flying higher" loop
+
+**Validation:**
+- Type checks pass (`npx tsc --noEmit`).
+
+---
+
+### Session C Hotfix (Feb 8, 2026 - Codex)
+
+**Issue:**
+- In round 2 after role swap, player 2 (new local pigeon) could lose their own pigeon model render on that client, while still rendering correctly on player 1.
+
+**Root cause:**
+- Role-swap model replacement was disposing mesh geometry/material resources from GLB clones.
+- Clones were shallow and shared underlying cached resources, so disposing one model could invalidate another live model instance.
+
+**Fix:**
+- Mark cache-derived model roots in `ModelLoader` (`fromModelCache`).
+- In `Player.swapModel()` and `Player.dispose()`, skip disposal for cache-derived models to avoid freeing shared resources during round transitions.
+
+**Validation:**
+- Re-tested role swap across rounds in two windows; local pigeon model now renders correctly after swap.
+- Type checks pass (`npx tsc --noEmit`).
+
+---
+
 ## Future Feature Plans
 
 ### Wing Flapping Animation (designed, not yet implemented)
@@ -289,20 +632,6 @@ Replace static wing meshes with **pivot groups** for animated flapping:
 
 **Files to modify:** Player.ts, Hawk.ts, constants.ts, Game.ts (minor)
 
-### AI Prey Animals (designed, not yet implemented)
-
-Replace static rat food items with moving AI animals:
-- **AI Rats** (6): scurry along streets in short bursts, pause, repeat. Flee from hawk.
-- **NPC Pigeons** (4): wander in central park, peck at ground. Flee from hawk.
-- Simple state machine: IDLE → WALKING → FLEEING
-- Ground-level only, simple building collision avoidance (rotate 90° on AABB hit)
-- Hawk catches them for energy (rats: +15, pigeons: +8)
-- AI runs on host, positions synced to client via existing food state pipeline
-- New `NPCAnimal.ts` entity class + `NPCSpawner.ts` manager
-
-**Files to create:** NPCAnimal.ts, NPCSpawner.ts
-**Files to modify:** constants.ts, FoodSpawner.ts, GameState.ts, messages.ts, NetworkManager.ts, Game.ts
-
 ### Art Direction (target style, not yet implemented)
 
 Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon body, stylized hawk with spread wings, warm color palette (oranges, purples, yellows), soft rounded building geometry. Characters should feel chunky and expressive, not realistic. The pigeon should look comically round and greedy; the hawk should look sleek and menacing with extended wingspan.
@@ -312,11 +641,11 @@ Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon
 ## Known Limitations
 1. ~~Camera can clip through buildings~~ — FIXED (Phase 2)
 2. No audio (future)
-3. Simple bird models — wing flapping planned (see above)
-4. No AI prey — designed, not yet built (see above)
-5. Limited map (2x2 blocks, future expansion to 4x4)
+3. ~~Simple bird models~~ — GLB models integrated (Feb 8, 2026)
+4. No AI prey — Phase 3 (see above)
+5. ~~Limited map (2x2 blocks)~~ — Phase 3 expansion to 10x10 grid (see above)
 6. ~~No dive attack for hawk~~ — FIXED (Phase 2)
-7. No leaderboard (Phase 3)
+7. No leaderboard (future)
 
 ---
 

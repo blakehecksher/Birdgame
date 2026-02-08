@@ -7,6 +7,7 @@ import {
   InputUpdateMessage,
   StateSyncMessage,
   FoodCollectedMessage,
+  NPCKilledMessage,
   PlayerDeathMessage,
   RoundStartMessage,
   RoundEndMessage,
@@ -64,6 +65,7 @@ export class NetworkManager {
   private onPlayerDeathCallback: ((message: any) => void) | null = null;
   private onRoundStartCallback: ((message: RoundStartMessage) => void) | null = null;
   private onFoodCollectedCallback: ((message: FoodCollectedMessage) => void) | null = null;
+  private onNPCKilledCallback: ((message: NPCKilledMessage) => void) | null = null;
   private onRoundEndCallback: ((message: RoundEndMessage) => void) | null = null;
 
   constructor(peerConnection: PeerConnection, gameState: GameState) {
@@ -90,6 +92,10 @@ export class NetworkManager {
 
       case MessageType.FOOD_COLLECTED:
         this.handleFoodCollected(message as FoodCollectedMessage);
+        break;
+
+      case MessageType.NPC_KILLED:
+        this.handleNPCKilled(message as NPCKilledMessage);
         break;
 
       case MessageType.PLAYER_DEATH:
@@ -225,6 +231,20 @@ export class NetworkManager {
         }
       });
     }
+
+    if (message.npcs) {
+      this.gameState.setNPCSnapshots(
+        message.npcs.map((npc) => ({
+          id: npc.id,
+          type: npc.type,
+          position: new THREE.Vector3(npc.position.x, npc.position.y, npc.position.z),
+          rotation: npc.rotation,
+          state: npc.state,
+          exists: npc.exists,
+          respawnTimer: 0,
+        }))
+      );
+    }
   }
 
   /**
@@ -291,6 +311,14 @@ export class NetworkManager {
         position: { x: food.position.x, y: food.position.y, z: food.position.z },
         exists: food.exists,
         respawnTimer: food.respawnTimer ?? 0,
+      })),
+      npcs: Array.from(this.gameState.npcs.values()).map((npc) => ({
+        id: npc.id,
+        type: npc.type,
+        position: { x: npc.position.x, y: npc.position.y, z: npc.position.z },
+        rotation: npc.rotation,
+        state: npc.state,
+        exists: npc.exists,
       })),
     });
 
@@ -383,6 +411,15 @@ export class NetworkManager {
   }
 
   /**
+   * Handle NPC killed message
+   */
+  private handleNPCKilled(message: NPCKilledMessage): void {
+    if (this.onNPCKilledCallback) {
+      this.onNPCKilledCallback(message);
+    }
+  }
+
+  /**
    * Handle round end message (timer expired)
    */
   private handleRoundEnd(message: RoundEndMessage): void {
@@ -443,6 +480,29 @@ export class NetworkManager {
   }
 
   /**
+   * Send NPC killed event (host only)
+   */
+  public sendNPCKilled(
+    npcId: string,
+    playerId: string,
+    npcType: NPCKilledMessage['npcType'],
+    exists: boolean,
+    respawnTimer: number
+  ): void {
+    if (!this.gameState.isHost) return;
+
+    const message = createMessage<NPCKilledMessage>(MessageType.NPC_KILLED, {
+      npcId,
+      playerId,
+      npcType,
+      exists,
+      respawnTimer,
+    });
+
+    this.peerConnection.send(message);
+  }
+
+  /**
    * Register callback for player death
    */
   public onPlayerDeath(callback: (message: any) => void): void {
@@ -461,6 +521,13 @@ export class NetworkManager {
    */
   public onFoodCollected(callback: (message: FoodCollectedMessage) => void): void {
     this.onFoodCollectedCallback = callback;
+  }
+
+  /**
+   * Register callback for NPC killed events
+   */
+  public onNPCKilled(callback: (message: NPCKilledMessage) => void): void {
+    this.onNPCKilledCallback = callback;
   }
 
   /**

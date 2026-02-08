@@ -10,12 +10,16 @@ import { Hawk } from '../entities/Hawk';
 import { GameState } from './GameState';
 import { PeerConnection } from '../network/PeerConnection';
 import { NetworkManager } from '../network/NetworkManager';
-import { FoodCollectedMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
+import { FoodCollectedMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
 import { ScoreUI } from '../ui/ScoreUI';
 import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
 import { FoodSpawner } from '../world/FoodSpawner';
 import { Environment } from '../world/Environment';
+import { preloadModels, getModel } from '../utils/ModelLoader';
+import { SeededRandom } from '../utils/SeededRandom';
+import { NPCType } from '../entities/NPC';
+import { NPCSpawner } from '../world/NPCSpawner';
 
 /**
  * Main game orchestrator
@@ -49,6 +53,7 @@ export class Game {
   private remotePigeon: Pigeon | null = null;
   private remoteHawk: Hawk | null = null;
   private foodSpawner: FoodSpawner | null = null;
+  private npcSpawner: NPCSpawner | null = null;
   private environment: Environment | null = null;
 
   // Game loop
@@ -58,6 +63,7 @@ export class Game {
   // State
   private isGameStarted: boolean = false;
   private lastReconcileTime: number = 0;
+  private worldSeed: number = 1;
 
   constructor() {
     // Get canvas
@@ -119,6 +125,64 @@ export class Game {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
     return code;
+  }
+
+  /**
+   * Stable 32-bit hash (FNV-1a) for deterministic world seed generation.
+   */
+  private hashToSeed(value: string): number {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  /**
+   * Derive shared world seed from the host peer id so both peers generate
+   * exactly the same map without an extra network message.
+   */
+  private getWorldSeedFromPeerIds(): number {
+    if (!this.gameState) return 1;
+
+    const hostPeerId = this.gameState.isHost
+      ? this.gameState.localPeerId
+      : (this.gameState.remotePeerId ?? this.gameState.localPeerId);
+
+    const seed = this.hashToSeed(hostPeerId);
+    return seed === 0 ? 1 : seed;
+  }
+
+  /**
+   * Get deterministic spawn points on opposite sides of the map.
+   */
+  private getSpawnPositions(): { local: THREE.Vector3; remote: THREE.Vector3 } {
+    const fallbackLeft = new THREE.Vector3(-10, 5, 0);
+    const fallbackRight = new THREE.Vector3(10, 5, 0);
+
+    if (!this.gameState) {
+      return { local: fallbackLeft, remote: fallbackRight };
+    }
+
+    let leftSpawn = fallbackLeft;
+    let rightSpawn = fallbackRight;
+
+    if (this.environment && this.environment.streetCenters.length >= 2) {
+      const centralBand = this.environment.streetCenters
+        .filter((point) => Math.abs(point.z) <= GAME_CONFIG.STREET_WIDTH * 2)
+        .sort((a, b) => a.x - b.x);
+      const sorted = (centralBand.length >= 2 ? centralBand : [...this.environment.streetCenters].sort((a, b) => a.x - b.x));
+
+      leftSpawn = sorted[0].clone();
+      rightSpawn = sorted[sorted.length - 1].clone();
+      leftSpawn.y = 5;
+      rightSpawn.y = 5;
+    }
+
+    return this.gameState.isHost
+      ? { local: leftSpawn, remote: rightSpawn }
+      : { local: rightSpawn, remote: leftSpawn };
   }
 
   /**
@@ -203,10 +267,18 @@ export class Game {
   /**
    * Start the game once connection is established
    */
-  private startGame(): void {
+  private async startGame(): Promise<void> {
     if (!this.gameState || !this.peerConnection) return;
 
     console.log('Starting game...');
+
+    // Preload 3D models
+    try {
+      await preloadModels();
+      console.log('3D models loaded');
+    } catch (err) {
+      console.warn('Failed to load 3D models, using fallback meshes:', err);
+    }
 
     // Initialize network manager
     this.networkManager = new NetworkManager(this.peerConnection, this.gameState);
@@ -215,51 +287,71 @@ export class Game {
     this.networkManager.onPlayerDeath((message) => this.handlePlayerDeath(message));
     this.networkManager.onRoundStart((message) => this.handleRoundStart(message));
     this.networkManager.onFoodCollected((message) => this.handleFoodCollected(message));
+    this.networkManager.onNPCKilled((message) => this.handleNPCKilled(message));
     this.networkManager.onRoundEnd((message) => this.handleRoundEnd(message));
 
     // Assign roles (host = pigeon, client = hawk for now, will swap later)
     const localRole = this.gameState.isHost ? PlayerRole.PIGEON : PlayerRole.HAWK;
     const remoteRole = this.gameState.isHost ? PlayerRole.HAWK : PlayerRole.PIGEON;
 
-    // Create local player
-    const localSpawnPos = new THREE.Vector3(
-      this.gameState.isHost ? -10 : 10,
-      5,
-      0
+    // Build deterministic world from shared seed.
+    this.worldSeed = this.getWorldSeedFromPeerIds();
+    this.environment = new Environment(this.sceneManager.scene, this.worldSeed);
+
+    // Set up camera collision with building meshes
+    this.cameraController.setCollisionMeshes(
+      this.environment.buildings.map((b) => b.mesh)
     );
+
+    const spawn = this.getSpawnPositions();
+    const localSpawnPos = spawn.local.clone();
+    const remoteSpawnPos = spawn.remote.clone();
+
+    // Create local player
     const localPlayerState = this.gameState.addPlayer(this.gameState.localPeerId, localRole, localSpawnPos);
-    this.localPlayer = new Player(localRole, localSpawnPos);
+    this.localPlayer = new Player(localRole, localSpawnPos, getModel(localRole));
     // Face toward center (host faces right, client faces left)
     this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
     localPlayerState.rotation.y = this.localPlayer.rotation.y;
     this.sceneManager.scene.add(this.localPlayer.mesh);
 
     // Create remote player
-    const remoteSpawnPos = new THREE.Vector3(
-      this.gameState.isHost ? 10 : -10,
-      5,
-      0
-    );
     const remotePlayerState = this.gameState.addPlayer(this.gameState.remotePeerId!, remoteRole, remoteSpawnPos);
-    this.remotePlayer = new Player(remoteRole, remoteSpawnPos);
+    this.remotePlayer = new Player(remoteRole, remoteSpawnPos, getModel(remoteRole));
     // Face toward center (hawk faces left, pigeon faces right)
     this.remotePlayer.rotation.y = this.gameState.isHost ? Math.PI : 0;
     remotePlayerState.rotation.y = this.remotePlayer.rotation.y;
     this.sceneManager.scene.add(this.remotePlayer.mesh);
 
-    // Create city environment
-    this.environment = new Environment(this.sceneManager.scene);
-
-    // Set up camera collision with building meshes
-    this.cameraController.setCollisionMeshes(
-      this.environment.buildings.map(b => b.mesh)
-    );
-
     // Spawn food entities
-    this.foodSpawner = new FoodSpawner(this.sceneManager.scene);
+    const foodRng = new SeededRandom((this.worldSeed ^ 0x9e3779b9) >>> 0);
+    this.foodSpawner = new FoodSpawner(
+      this.sceneManager.scene,
+      this.environment.parkCells,
+      this.environment.streetCenters,
+      this.environment.buildings,
+      foodRng
+    );
     this.foodSpawner.getFoods().forEach((food) => {
       this.gameState!.addFood(food.id, food.type, food.position);
     });
+
+    const npcRng = new SeededRandom((this.worldSeed ^ 0x7f4a7c15) >>> 0);
+    this.npcSpawner = new NPCSpawner(
+      this.sceneManager.scene,
+      npcRng,
+      this.environment.parkCells,
+      this.environment.streetCenters,
+      this.environment.treeCanopies
+    );
+    if (this.gameState.isHost) {
+      this.npcSpawner.spawnInitial(
+        GAME_CONFIG.NPC_PIGEON_COUNT,
+        GAME_CONFIG.NPC_RAT_COUNT,
+        GAME_CONFIG.NPC_SQUIRREL_COUNT
+      );
+      this.syncNPCStateToGameState();
+    }
 
     // Initialize role-specific stat controllers
     this.syncRoleControllers();
@@ -267,7 +359,7 @@ export class Game {
     // Set initial camera position
     this.cameraController.setPositionImmediate(this.localPlayer.mesh, this.localPlayer.rotation);
 
-    // Hide lobby, show HUD, crosshair, and connection status
+    // Hide lobby, show HUD, flight indicator, and connection status
     this.lobbyUI.hide();
     const hud = document.getElementById('hud');
     if (hud) hud.style.display = 'block';
@@ -354,6 +446,20 @@ export class Game {
 
     if (this.foodSpawner) {
       this.foodSpawner.update(deltaTime);
+    }
+    if (this.npcSpawner) {
+      if (this.gameState.isHost) {
+        if (this.gameState.roundState === RoundState.PLAYING) {
+          const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK ? this.localPlayer : this.remotePlayer;
+          const buildingBounds = this.environment
+            ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
+            : [];
+          this.npcSpawner.update(deltaTime, hawkPlayer?.position ?? null, buildingBounds);
+        }
+        this.syncNPCStateToGameState();
+      } else {
+        this.syncNPCStateFromGameState();
+      }
     }
 
     // Sync local player state to game state
@@ -564,6 +670,15 @@ export class Game {
         this.checkFoodCollision(this.remotePlayer, this.gameState.remotePeerId);
       }
     }
+
+    if (this.npcSpawner) {
+      if (this.localPlayer.role === PlayerRole.HAWK) {
+        this.checkNPCCollision(this.localPlayer, this.gameState.localPeerId);
+      }
+      if (this.gameState.remotePeerId && this.remotePlayer.role === PlayerRole.HAWK) {
+        this.checkNPCCollision(this.remotePlayer, this.gameState.remotePeerId);
+      }
+    }
   }
 
   /**
@@ -712,21 +827,14 @@ export class Game {
       this.localPlayer.role = localPlayerState.role;
       this.remotePlayer.role = remotePlayerState.role;
 
-      // Update bird colors
-      this.updateBirdColor(this.localPlayer);
-      this.updateBirdColor(this.remotePlayer);
+      // Swap bird models for new roles
+      this.swapPlayerModel(this.localPlayer);
+      this.swapPlayerModel(this.remotePlayer);
 
       // Reset positions
-      this.localPlayer.position.set(
-        this.gameState.isHost ? -10 : 10,
-        5,
-        0
-      );
-      this.remotePlayer.position.set(
-        this.gameState.isHost ? 10 : -10,
-        5,
-        0
-      );
+      const spawn = this.getSpawnPositions();
+      this.localPlayer.position.copy(spawn.local);
+      this.remotePlayer.position.copy(spawn.remote);
 
       // Reset rotations (including bank angle)
       this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
@@ -758,6 +866,10 @@ export class Game {
     if (this.foodSpawner) {
       this.foodSpawner.resetAll();
       this.syncFoodStateToGameState();
+    }
+    if (this.npcSpawner) {
+      this.npcSpawner.resetAll();
+      this.syncNPCStateToGameState();
     }
 
     // Start new round
@@ -880,6 +992,44 @@ export class Game {
   }
 
   /**
+   * Check NPC collisions for hawk players (host only).
+   */
+  private checkNPCCollision(player: Player, playerId: string): void {
+    if (!this.npcSpawner || !this.networkManager) return;
+    if (player.role !== PlayerRole.HAWK) return;
+
+    for (const npc of this.npcSpawner.getNPCs()) {
+      if (!npc.exists) continue;
+
+      const hit = this.collisionDetector.checkSpherePointCollision(
+        player.position,
+        player.radius + npc.radius,
+        npc.position
+      );
+      if (!hit) continue;
+
+      const respawnTime = npc.getRespawnTime();
+      const killed = this.npcSpawner!.killNPC(npc.id, respawnTime);
+      if (!killed) continue;
+
+      player.startEating(killed.getEatTime());
+
+      const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+      hawk?.addEnergy(killed.getEnergyReward());
+
+      this.syncNPCStateToGameState();
+      this.networkManager!.sendNPCKilled(
+        killed.id,
+        playerId,
+        killed.type,
+        false,
+        respawnTime
+      );
+      break;
+    }
+  }
+
+  /**
    * Apply food effects to the role controller.
    */
   private applyFoodEffect(player: Player, foodType: FoodType, weightGain: number, energyGain: number): void {
@@ -892,6 +1042,30 @@ export class Game {
     if (player.role === PlayerRole.HAWK && foodType === FoodType.RAT) {
       const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
       hawk?.addEnergy(energyGain);
+    }
+  }
+
+  private getNPCEatTime(type: NPCType): number {
+    switch (type) {
+      case NPCType.PIGEON:
+        return GAME_CONFIG.NPC_PIGEON_EAT_TIME;
+      case NPCType.SQUIRREL:
+        return GAME_CONFIG.NPC_SQUIRREL_EAT_TIME;
+      case NPCType.RAT:
+      default:
+        return GAME_CONFIG.NPC_RAT_EAT_TIME;
+    }
+  }
+
+  private getNPCEnergyReward(type: NPCType): number {
+    switch (type) {
+      case NPCType.PIGEON:
+        return GAME_CONFIG.NPC_PIGEON_ENERGY;
+      case NPCType.SQUIRREL:
+        return GAME_CONFIG.NPC_SQUIRREL_ENERGY;
+      case NPCType.RAT:
+      default:
+        return GAME_CONFIG.NPC_RAT_ENERGY;
     }
   }
 
@@ -923,6 +1097,43 @@ export class Game {
     this.gameState.foods.forEach((foodState) => {
       this.foodSpawner!.setFoodState(foodState.id, foodState.exists, foodState.respawnTimer);
     });
+  }
+
+  /**
+   * Copy NPC state from spawner to authoritative game state.
+   */
+  private syncNPCStateToGameState(): void {
+    if (!this.gameState || !this.npcSpawner) return;
+
+    this.gameState.setNPCSnapshots(
+      this.npcSpawner.getSnapshots().map((snapshot) => ({
+        id: snapshot.id,
+        type: snapshot.type,
+        position: new THREE.Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z),
+        rotation: snapshot.rotation,
+        state: snapshot.state,
+        exists: snapshot.exists,
+        respawnTimer: 0,
+      }))
+    );
+  }
+
+  /**
+   * Copy NPC state from game state into local visuals.
+   */
+  private syncNPCStateFromGameState(): void {
+    if (!this.gameState || !this.npcSpawner) return;
+
+    this.npcSpawner.applySnapshots(
+      Array.from(this.gameState.npcs.values()).map((npc) => ({
+        id: npc.id,
+        type: npc.type,
+        position: { x: npc.position.x, y: npc.position.y, z: npc.position.z },
+        rotation: npc.rotation,
+        state: npc.state,
+        exists: npc.exists,
+      }))
+    );
   }
 
   /**
@@ -1016,20 +1227,13 @@ export class Game {
   }
 
   /**
-   * Update bird color based on role
+   * Swap the player's 3D model to match their current role.
    */
-  private updateBirdColor(player: Player): void {
-    const color = player.role === PlayerRole.PIGEON ? 0x9999ff : 0xff6633;
-    player.mesh.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        if (child.material instanceof THREE.MeshLambertMaterial) {
-          // Don't change beak color
-          if (child.material.color.getHex() !== 0xffaa00) {
-            child.material.color.setHex(color);
-          }
-        }
-      }
-    });
+  private swapPlayerModel(player: Player): void {
+    const model = getModel(player.role);
+    if (model) {
+      player.swapModel(model);
+    }
   }
 
   /**
@@ -1087,6 +1291,27 @@ export class Game {
   }
 
   /**
+   * Handle NPC killed event (client only).
+   */
+  private handleNPCKilled(message: NPCKilledMessage): void {
+    if (this.gameState?.isHost) return;
+    if (!this.gameState || !this.npcSpawner) return;
+
+    const npc = this.npcSpawner.getNPC(message.npcId);
+    if (npc && message.exists === false) {
+      npc.kill(message.respawnTimer);
+    }
+
+    const collector = message.playerId === this.gameState.localPeerId ? this.localPlayer : this.remotePlayer;
+    if (!collector || collector.role !== PlayerRole.HAWK) return;
+
+    collector.startEating(this.getNPCEatTime(message.npcType));
+
+    const hawk = collector === this.localPlayer ? this.localHawk : this.remoteHawk;
+    hawk?.addEnergy(this.getNPCEnergyReward(message.npcType));
+  }
+
+  /**
    * Handle round start network event (client only)
    */
   private handleRoundStart(message: RoundStartMessage): void {
@@ -1111,9 +1336,9 @@ export class Game {
       this.localPlayer.role = localPlayerState.role;
       this.remotePlayer.role = remotePlayerState.role;
 
-      // Update bird colors
-      this.updateBirdColor(this.localPlayer);
-      this.updateBirdColor(this.remotePlayer);
+      // Swap bird models for new roles
+      this.swapPlayerModel(this.localPlayer);
+      this.swapPlayerModel(this.remotePlayer);
 
       // Reset transforms from host-authoritative spawn states.
       const localSpawn = message.spawnStates[this.gameState.localPeerId];
@@ -1146,6 +1371,7 @@ export class Game {
     if (this.foodSpawner) {
       this.foodSpawner.resetAll();
     }
+    this.syncNPCStateFromGameState();
 
     // Start new round
     this.gameState.roundNumber = Math.max(0, message.roundNumber - 1);
@@ -1182,6 +1408,7 @@ export class Game {
     if (this.localPlayer) this.localPlayer.dispose();
     if (this.remotePlayer) this.remotePlayer.dispose();
     if (this.foodSpawner) this.foodSpawner.dispose();
+    if (this.npcSpawner) this.npcSpawner.dispose();
     if (this.environment) this.environment.dispose();
     if (this.peerConnection) this.peerConnection.disconnect();
   }

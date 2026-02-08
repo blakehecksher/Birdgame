@@ -1,4 +1,5 @@
 import { PlayerRole } from '../config/constants';
+import { NPCSnapshot, NPCType } from '../entities/NPC';
 
 /**
  * Network message types for communication between peers
@@ -15,6 +16,7 @@ export enum MessageType {
 
   // Gameplay - Events
   FOOD_COLLECTED = 'FOOD_COLLECTED',
+  NPC_KILLED = 'NPC_KILLED',
   PLAYER_DEATH = 'PLAYER_DEATH',
   ROUND_END = 'ROUND_END',
   ROUND_START = 'ROUND_START',
@@ -90,6 +92,7 @@ export interface StateSyncMessage extends BaseMessage {
     exists: boolean;
     respawnTimer?: number;
   }>;
+  npcs?: NPCSnapshot[];
 }
 
 /**
@@ -99,6 +102,18 @@ export interface FoodCollectedMessage extends BaseMessage {
   type: MessageType.FOOD_COLLECTED;
   foodId: string;
   playerId: string;
+  exists: boolean;
+  respawnTimer: number;
+}
+
+/**
+ * NPC killed event
+ */
+export interface NPCKilledMessage extends BaseMessage {
+  type: MessageType.NPC_KILLED;
+  npcId: string;
+  playerId: string;
+  npcType: NPCType;
   exists: boolean;
   respawnTimer: number;
 }
@@ -152,6 +167,7 @@ export type NetworkMessage =
   | InputUpdateMessage
   | StateSyncMessage
   | FoodCollectedMessage
+  | NPCKilledMessage
   | PlayerDeathMessage
   | RoundEndMessage
   | RoundStartMessage;

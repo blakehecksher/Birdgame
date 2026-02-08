@@ -7,7 +7,7 @@ import { FoodType, GAME_CONFIG } from '../config/constants';
 export class Food {
   public id: string;
   public type: FoodType;
-  public mesh: THREE.Mesh;
+  public mesh: THREE.Group;
   public position: THREE.Vector3;
   public exists: boolean = true;
   public respawnTimer: number = 0;
@@ -18,7 +18,7 @@ export class Food {
   public eatTime: number = 1;
   public radius: number = 0.5; // Collision radius
 
-  constructor(id: string, type: FoodType, position: THREE.Vector3) {
+  constructor(id: string, type: FoodType, position: THREE.Vector3, model?: THREE.Group | null) {
     this.id = id;
     this.type = type;
     this.position = position.clone();
@@ -26,8 +26,9 @@ export class Food {
     // Set properties based on food type
     this.setPropertiesByType(type);
 
-    // Create mesh
-    this.mesh = this.createMesh(type);
+    // Create mesh (optional model with procedural fallback)
+    this.mesh = new THREE.Group();
+    this.mesh.add(model ?? this.createMesh(type));
     this.mesh.position.copy(this.position);
   }
 
@@ -158,9 +159,13 @@ export class Food {
    * Cleanup
    */
   public dispose(): void {
-    this.mesh.geometry.dispose();
-    if (this.mesh.material instanceof THREE.Material) {
-      this.mesh.material.dispose();
-    }
+    this.mesh.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose();
+        }
+      }
+    });
   }
 }

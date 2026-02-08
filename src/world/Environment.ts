@@ -1,9 +1,31 @@
 import * as THREE from 'three';
 import { Building } from './Building';
 import { GAME_CONFIG } from '../config/constants';
+import { SeededRandom } from '../utils/SeededRandom';
+import { getModelByKey } from '../utils/ModelLoader';
 
 /**
- * Tree structure for the park
+ * Cell type in the city grid.
+ */
+export enum CellType {
+  PARK = 'park',
+  BUILDING = 'building',
+}
+
+/**
+ * Info about a single grid cell, exported for FoodSpawner / NPCSpawner use.
+ */
+export interface GridCell {
+  row: number;
+  col: number;
+  type: CellType;
+  centerX: number;
+  centerZ: number;
+  size: number;
+}
+
+/**
+ * Tree collision data.
  */
 interface Tree {
   group: THREE.Group;
@@ -13,161 +35,267 @@ interface Tree {
   canopyCenterY: number;
 }
 
+export interface TreeCanopyAnchor {
+  position: THREE.Vector3;
+  canopyRadius: number;
+  canopyCenterY: number;
+}
+
 /**
- * City environment generator
- * Creates a 2x2 block city grid with a central park
+ * City environment generator — 10x10 seeded grid.
+ *
+ * Grid layout:
+ *   - 10×10 cells, each CELL_SIZE × CELL_SIZE, separated by STREET_WIDTH streets
+ *   - Each cell is either BUILDING or PARK (seeded random, ~40% building)
+ *   - Edge cells (row 0, row 9, col 0, col 9) are forced to PARK
+ *   - Building cells get 1-2 random buildings
+ *   - Park cells get trees and benches
+ *   - Streets run between every row and column
  */
 export class Environment {
   public buildings: Building[] = [];
   public trees: Tree[] = [];
-  private group: THREE.Group;
+  public treeCanopies: TreeCanopyAnchor[] = [];
+  public grid: GridCell[][] = [];
+  public parkCells: GridCell[] = [];
+  public streetCenters: THREE.Vector3[] = [];
 
-  constructor(scene: THREE.Scene) {
+  private group: THREE.Group;
+  private rng: SeededRandom;
+
+  constructor(scene: THREE.Scene, seed: number) {
     this.group = new THREE.Group();
     scene.add(this.group);
+    this.rng = new SeededRandom(seed);
 
-    this.createCityGrid();
-    this.createPark();
+    this.createGroundPlane();
+    this.generateGrid();
+    this.buildCells();
     this.createStreets();
   }
 
   /**
-   * Create 2x2 city blocks with buildings
-   * Layout (top-down, centered on origin):
-   *
-   *  NW Block  |  street  |  NE Block
-   *  ----------+---------+----------
-   *   street   |  PARK   |  street
-   *  ----------+---------+----------
-   *  SW Block  |  street  |  SE Block
+   * Compute the world-space center of a grid cell.
    */
-  private createCityGrid(): void {
-    const blockOffset = 35; // Distance from center to block center
-    let buildingIndex = 0;
+  private cellCenter(row: number, col: number): { x: number; z: number } {
+    const gridTotal = GAME_CONFIG.GRID_SIZE * GAME_CONFIG.CELL_SIZE +
+      (GAME_CONFIG.GRID_SIZE + 1) * GAME_CONFIG.STREET_WIDTH;
+    const halfGrid = gridTotal / 2;
 
-    // Building positions: [x, z, width, depth]
-    // Each block gets 2-3 buildings of varying sizes
-    const blockConfigs = [
-      // NW Block (negative x, negative z)
-      { cx: -blockOffset, cz: -blockOffset, buildings: [
-        { ox: -8, oz: -8, w: 14, d: 14 },
-        { ox: 8, oz: -5, w: 10, d: 18 },
-        { ox: -5, oz: 10, w: 18, d: 8 },
-      ]},
-      // NE Block (positive x, negative z)
-      { cx: blockOffset, cz: -blockOffset, buildings: [
-        { ox: 0, oz: -8, w: 20, d: 12 },
-        { ox: -8, oz: 8, w: 12, d: 12 },
-        { ox: 8, oz: 6, w: 10, d: 16 },
-      ]},
-      // SW Block (negative x, positive z)
-      { cx: -blockOffset, cz: blockOffset, buildings: [
-        { ox: -6, oz: 0, w: 16, d: 20 },
-        { ox: 8, oz: -8, w: 10, d: 10 },
-        { ox: 8, oz: 8, w: 12, d: 10 },
-      ]},
-      // SE Block (positive x, positive z)
-      { cx: blockOffset, cz: blockOffset, buildings: [
-        { ox: 0, oz: -6, w: 22, d: 14 },
-        { ox: -6, oz: 10, w: 14, d: 8 },
-        { ox: 8, oz: 10, w: 8, d: 8 },
-      ]},
-    ];
+    const x = GAME_CONFIG.STREET_WIDTH * (col + 1) + GAME_CONFIG.CELL_SIZE * col +
+      GAME_CONFIG.CELL_SIZE / 2 - halfGrid;
+    const z = GAME_CONFIG.STREET_WIDTH * (row + 1) + GAME_CONFIG.CELL_SIZE * row +
+      GAME_CONFIG.CELL_SIZE / 2 - halfGrid;
 
-    for (const block of blockConfigs) {
-      for (const b of block.buildings) {
-        const t = this.seededUnitValue(buildingIndex + 1);
-        const height = GAME_CONFIG.BUILDING_MIN_HEIGHT +
-          t * (GAME_CONFIG.BUILDING_MAX_HEIGHT - GAME_CONFIG.BUILDING_MIN_HEIGHT);
+    return { x, z };
+  }
 
-        const building = new Building(
-          block.cx + b.ox,
-          block.cz + b.oz,
-          b.w,
-          b.d,
-          height
-        );
+  /**
+   * Generate the 10×10 grid, assigning BUILDING or PARK to each cell.
+   */
+  private generateGrid(): void {
+    const size = GAME_CONFIG.GRID_SIZE;
 
-        this.buildings.push(building);
-        this.group.add(building.mesh);
-        buildingIndex++;
+    // First pass: assign types
+    for (let row = 0; row < size; row++) {
+      this.grid[row] = [];
+      for (let col = 0; col < size; col++) {
+        const isEdge = row === 0 || row === size - 1 || col === 0 || col === size - 1;
+        const center = this.cellCenter(row, col);
+
+        const type: CellType = isEdge
+          ? CellType.PARK
+          : this.rng.chance(GAME_CONFIG.BUILDING_CHANCE) ? CellType.BUILDING : CellType.PARK;
+
+        this.grid[row][col] = {
+          row,
+          col,
+          type,
+          centerX: center.x,
+          centerZ: center.z,
+          size: GAME_CONFIG.CELL_SIZE,
+        };
+      }
+    }
+
+    // Second pass: ensure no isolated building cells (must have at least one park neighbor)
+    for (let row = 1; row < size - 1; row++) {
+      for (let col = 1; col < size - 1; col++) {
+        if (this.grid[row][col].type !== CellType.BUILDING) continue;
+
+        const neighbors = [
+          this.grid[row - 1][col],
+          this.grid[row + 1][col],
+          this.grid[row][col - 1],
+          this.grid[row][col + 1],
+        ];
+        const hasParkNeighbor = neighbors.some(n => n.type === CellType.PARK);
+        if (!hasParkNeighbor) {
+          // Convert a random neighbor to park
+          const ni = this.rng.nextInt(0, neighbors.length - 1);
+          neighbors[ni].type = CellType.PARK;
+        }
+      }
+    }
+
+    // Collect park cells and street centers
+    for (let row = 0; row < size; row++) {
+      for (let col = 0; col < size; col++) {
+        if (this.grid[row][col].type === CellType.PARK) {
+          this.parkCells.push(this.grid[row][col]);
+        }
+      }
+    }
+
+    this.computeStreetCenters();
+  }
+
+  /**
+   * Compute representative street center positions for NPC/food spawning.
+   */
+  private computeStreetCenters(): void {
+    const size = GAME_CONFIG.GRID_SIZE;
+
+    // Horizontal streets: midpoint between row pairs
+    for (let row = 0; row < size - 1; row++) {
+      const z1 = this.grid[row][0].centerZ;
+      const z2 = this.grid[row + 1][0].centerZ;
+      const streetZ = (z1 + z2) / 2;
+      for (let col = 0; col < size; col++) {
+        this.streetCenters.push(new THREE.Vector3(this.grid[row][col].centerX, 0.3, streetZ));
+      }
+    }
+
+    // Vertical streets: midpoint between column pairs
+    for (let col = 0; col < size - 1; col++) {
+      const x1 = this.grid[0][col].centerX;
+      const x2 = this.grid[0][col + 1].centerX;
+      const streetX = (x1 + x2) / 2;
+      for (let row = 0; row < size; row++) {
+        this.streetCenters.push(new THREE.Vector3(streetX, 0.3, this.grid[row][col].centerZ));
       }
     }
   }
 
   /**
-   * Create central park with trees
+   * Build content for each cell.
    */
-  private createPark(): void {
-    const parkSize = GAME_CONFIG.PARK_SIZE;
-
-    // Green park ground
-    const parkGeometry = new THREE.PlaneGeometry(parkSize, parkSize);
-    const parkMaterial = new THREE.MeshLambertMaterial({ color: 0x4a7a3a });
-    const parkGround = new THREE.Mesh(parkGeometry, parkMaterial);
-    parkGround.rotation.x = -Math.PI / 2;
-    parkGround.position.set(0, 0.01, 0); // Slightly above main ground to avoid z-fighting
-    parkGround.receiveShadow = true;
-    this.group.add(parkGround);
-
-    // Add trees in a scattered pattern
-    const treePositions = [
-      { x: -12, z: -12 },
-      { x: 8, z: -15 },
-      { x: -18, z: 5 },
-      { x: 15, z: 8 },
-      { x: -5, z: 14 },
-      { x: 5, z: -5 },
-      { x: -10, z: -18 },
-      { x: 18, z: -5 },
-      { x: -15, z: 15 },
-      { x: 10, z: 18 },
-    ];
-
-    for (let i = 0; i < treePositions.length; i++) {
-      const pos = treePositions[i];
-      this.createTree(pos.x, pos.z, i + 1);
-    }
-
-    // Park benches (simple box geometry)
-    const benchPositions = [
-      { x: 0, z: -8, ry: 0 },
-      { x: 0, z: 8, ry: 0 },
-      { x: -8, z: 0, ry: Math.PI / 2 },
-      { x: 8, z: 0, ry: Math.PI / 2 },
-    ];
-
-    for (const pos of benchPositions) {
-      this.createBench(pos.x, pos.z, pos.ry);
+  private buildCells(): void {
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+      for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        const cell = this.grid[row][col];
+        if (cell.type === CellType.BUILDING) {
+          this.buildBuildingCell(cell);
+        } else {
+          this.buildParkCell(cell);
+        }
+      }
     }
   }
 
   /**
-   * Create a simple low-poly tree
+   * Place 1-2 buildings in a building cell.
    */
-  private createTree(x: number, z: number, seed: number): void {
+  private buildBuildingCell(cell: GridCell): void {
+    const count = this.rng.nextInt(1, 2);
+    const halfCell = cell.size / 2;
+    const margin = 2;
+    const usable = halfCell - margin;
+
+    for (let i = 0; i < count; i++) {
+      const w = this.rng.nextFloat(8, Math.min(22, cell.size - margin * 2));
+      const d = this.rng.nextFloat(8, Math.min(22, cell.size - margin * 2));
+      const h = this.rng.nextFloat(GAME_CONFIG.BUILDING_MIN_HEIGHT, GAME_CONFIG.BUILDING_MAX_HEIGHT);
+
+      let ox: number, oz: number;
+      if (count === 1) {
+        ox = this.rng.nextFloat(-usable + w / 2, usable - w / 2);
+        oz = this.rng.nextFloat(-usable + d / 2, usable - d / 2);
+      } else if (i === 0) {
+        ox = this.rng.nextFloat(-usable + w / 2, -1);
+        oz = this.rng.nextFloat(-usable + d / 2, usable - d / 2);
+      } else {
+        ox = this.rng.nextFloat(1, usable - w / 2);
+        oz = this.rng.nextFloat(-usable + d / 2, usable - d / 2);
+      }
+
+      const building = new Building(
+        cell.centerX + ox,
+        cell.centerZ + oz,
+        w,
+        d,
+        h,
+        getModelByKey('environment/building')
+      );
+      this.buildings.push(building);
+      this.group.add(building.mesh);
+    }
+  }
+
+  /**
+   * Place trees and benches in a park cell.
+   */
+  private buildParkCell(cell: GridCell): void {
+    const halfCell = cell.size / 2;
+    const margin = 2;
+    const inner = halfCell - margin;
+
+    // Green ground plane
+    const parkGround = new THREE.Mesh(
+      new THREE.PlaneGeometry(cell.size, cell.size),
+      new THREE.MeshLambertMaterial({ color: 0x4a7a3a })
+    );
+    parkGround.rotation.x = -Math.PI / 2;
+    parkGround.position.set(cell.centerX, 0.01, cell.centerZ);
+    parkGround.receiveShadow = true;
+    this.group.add(parkGround);
+
+    // Trees
+    const treeCount = this.rng.nextInt(GAME_CONFIG.PARK_TREES_MIN, GAME_CONFIG.PARK_TREES_MAX);
+    for (let i = 0; i < treeCount; i++) {
+      this.createTree(
+        cell.centerX + this.rng.nextFloat(-inner, inner),
+        cell.centerZ + this.rng.nextFloat(-inner, inner)
+      );
+    }
+
+    // Benches
+    const benchCount = this.rng.nextInt(0, GAME_CONFIG.PARK_BENCHES_MAX);
+    for (let i = 0; i < benchCount; i++) {
+      this.createBench(
+        cell.centerX + this.rng.nextFloat(-inner, inner),
+        cell.centerZ + this.rng.nextFloat(-inner, inner),
+        this.rng.chance(0.5) ? 0 : Math.PI / 2
+      );
+    }
+  }
+
+  /**
+   * Create a low-poly tree.
+   */
+  private createTree(x: number, z: number): void {
     const treeGroup = new THREE.Group();
 
-    // Deterministic size variation.
-    const scale = 0.8 + this.seededUnitValue(100 + seed) * 0.6;
+    const scale = this.rng.nextFloat(0.8, 1.4);
     const trunkHeight = 3 * scale;
     const trunkRadius = 0.3 * scale;
     const canopyRadius = 2.5 * scale;
 
-    // Trunk
-    const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius * 1.2, trunkHeight, 6);
-    const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(trunkRadius, trunkRadius * 1.2, trunkHeight, 6),
+      new THREE.MeshLambertMaterial({ color: 0x6b4226 })
+    );
     trunk.position.y = trunkHeight / 2;
     trunk.castShadow = true;
     treeGroup.add(trunk);
 
-    // Canopy (sphere)
-    const canopyGeometry = new THREE.SphereGeometry(canopyRadius, 8, 6);
-    const canopyColor = this.getDeterministicTreeColor(seed);
-    const canopyMaterial = new THREE.MeshLambertMaterial({ color: canopyColor });
-    const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial);
     const canopyCenterY = trunkHeight + canopyRadius * 0.6;
+    const canopy = new THREE.Mesh(
+      new THREE.SphereGeometry(canopyRadius, 8, 6),
+      new THREE.MeshLambertMaterial({
+        color: this.rng.pick([0x2d5a1e, 0x356425, 0x3b6a2b, 0x2f6122, 0x42732f]),
+      })
+    );
     canopy.position.y = canopyCenterY;
     canopy.castShadow = true;
     canopy.receiveShadow = true;
@@ -183,143 +311,81 @@ export class Environment {
       canopyRadius,
       canopyCenterY,
     });
+    this.treeCanopies.push({
+      position: new THREE.Vector3(x, 0, z),
+      canopyRadius,
+      canopyCenterY,
+    });
   }
 
   /**
-   * Deterministic pseudo-random value in [0, 1).
-   */
-  private seededUnitValue(seed: number): number {
-    const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
-    return x - Math.floor(x);
-  }
-
-  /**
-   * Deterministic canopy color variation.
-   */
-  private getDeterministicTreeColor(seed: number): number {
-    const greenPalette = [
-      0x2d5a1e,
-      0x356425,
-      0x3b6a2b,
-      0x2f6122,
-      0x42732f,
-    ];
-    const idx = Math.floor(this.seededUnitValue(200 + seed) * greenPalette.length);
-    return greenPalette[Math.min(idx, greenPalette.length - 1)];
-  }
-
-  /**
-   * Create a simple park bench
+   * Create a park bench.
    */
   private createBench(x: number, z: number, rotationY: number): void {
     const benchGroup = new THREE.Group();
-    const benchMaterial = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
+    const mat = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
 
-    // Seat
-    const seat = new THREE.Mesh(
-      new THREE.BoxGeometry(2, 0.1, 0.6),
-      benchMaterial
-    );
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(2, 0.1, 0.6), mat);
     seat.position.y = 0.5;
     benchGroup.add(seat);
 
-    // Legs
-    const legGeometry = new THREE.BoxGeometry(0.1, 0.5, 0.1);
-    const positions = [
-      [-0.8, 0.25, -0.2],
-      [-0.8, 0.25, 0.2],
-      [0.8, 0.25, -0.2],
-      [0.8, 0.25, 0.2],
-    ];
-    for (const [lx, ly, lz] of positions) {
-      const leg = new THREE.Mesh(legGeometry, benchMaterial);
+    const legGeo = new THREE.BoxGeometry(0.1, 0.5, 0.1);
+    for (const [lx, ly, lz] of [[-0.8, 0.25, -0.2], [-0.8, 0.25, 0.2], [0.8, 0.25, -0.2], [0.8, 0.25, 0.2]]) {
+      const leg = new THREE.Mesh(legGeo, mat);
       leg.position.set(lx, ly, lz);
       benchGroup.add(leg);
     }
 
-    // Back
-    const back = new THREE.Mesh(
-      new THREE.BoxGeometry(2, 0.6, 0.08),
-      benchMaterial
-    );
+    const back = new THREE.Mesh(new THREE.BoxGeometry(2, 0.6, 0.08), mat);
     back.position.set(0, 0.8, -0.25);
     benchGroup.add(back);
 
     benchGroup.position.set(x, 0, z);
     benchGroup.rotation.y = rotationY;
-    benchGroup.castShadow = true;
     this.group.add(benchGroup);
   }
 
   /**
-   * Create street surfaces between blocks
+   * Create street line markings between cells.
    */
   private createStreets(): void {
-    // Main cross streets (horizontal and vertical through center)
-    // These are already visible as the default ground, but we add sidewalk lines
-
-    // Street line markings (yellow center lines)
     const lineMaterial = new THREE.MeshLambertMaterial({ color: 0xcccc44 });
+    const gridTotal = GAME_CONFIG.GRID_SIZE * GAME_CONFIG.CELL_SIZE +
+      (GAME_CONFIG.GRID_SIZE + 1) * GAME_CONFIG.STREET_WIDTH;
+    const halfGrid = gridTotal / 2;
 
-    // Horizontal center line
-    const hLine = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 0.3),
-      lineMaterial
-    );
-    hLine.rotation.x = -Math.PI / 2;
-    hLine.position.set(0, 0.02, -35);
-    this.group.add(hLine);
+    for (let i = 0; i <= GAME_CONFIG.GRID_SIZE; i++) {
+      const offset = GAME_CONFIG.STREET_WIDTH * (i + 0.5) + GAME_CONFIG.CELL_SIZE * i - halfGrid;
 
-    const hLine2 = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 0.3),
-      lineMaterial
-    );
-    hLine2.rotation.x = -Math.PI / 2;
-    hLine2.position.set(0, 0.02, 35);
-    this.group.add(hLine2);
+      // Horizontal street line
+      const hLine = new THREE.Mesh(new THREE.PlaneGeometry(gridTotal, 0.3), lineMaterial);
+      hLine.rotation.x = -Math.PI / 2;
+      hLine.position.set(0, 0.02, offset);
+      this.group.add(hLine);
 
-    // Vertical center lines
-    const vLine = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.3, 100),
-      lineMaterial
-    );
-    vLine.rotation.x = -Math.PI / 2;
-    vLine.position.set(-35, 0.02, 0);
-    this.group.add(vLine);
-
-    const vLine2 = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.3, 100),
-      lineMaterial
-    );
-    vLine2.rotation.x = -Math.PI / 2;
-    vLine2.position.set(35, 0.02, 0);
-    this.group.add(vLine2);
-
-    // Sidewalk edges around park
-    const parkHalf = GAME_CONFIG.PARK_SIZE / 2;
-    const edgeMaterial = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
-    const edgeThickness = 0.5;
-    const edgeHeight = 0.15;
-
-    const edges = [
-      { x: 0, z: -parkHalf, w: GAME_CONFIG.PARK_SIZE, d: edgeThickness },
-      { x: 0, z: parkHalf, w: GAME_CONFIG.PARK_SIZE, d: edgeThickness },
-      { x: -parkHalf, z: 0, w: edgeThickness, d: GAME_CONFIG.PARK_SIZE },
-      { x: parkHalf, z: 0, w: edgeThickness, d: GAME_CONFIG.PARK_SIZE },
-    ];
-
-    for (const edge of edges) {
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(edge.w, edgeHeight, edge.d),
-        edgeMaterial
-      );
-      mesh.position.set(edge.x, edgeHeight / 2, edge.z);
-      this.group.add(mesh);
+      // Vertical street line
+      const vLine = new THREE.Mesh(new THREE.PlaneGeometry(0.3, gridTotal), lineMaterial);
+      vLine.rotation.x = -Math.PI / 2;
+      vLine.position.set(offset, 0.02, 0);
+      this.group.add(vLine);
     }
   }
 
   /**
-   * Check if a sphere collides with any building and resolve
+   * Create the main ground plane.
+   */
+  private createGroundPlane(): void {
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(GAME_CONFIG.GROUND_SIZE, GAME_CONFIG.GROUND_SIZE),
+      new THREE.MeshLambertMaterial({ color: 0x666666 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    this.group.add(ground);
+  }
+
+  /**
+   * Check building and tree trunk collisions, push player out.
    */
   public checkAndResolveCollisions(position: THREE.Vector3, radius: number, velocity: THREE.Vector3): boolean {
     let collided = false;
@@ -331,22 +397,17 @@ export class Environment {
       }
     }
 
-    // Tree trunk collision (simple cylinder check)
     for (const tree of this.trees) {
       const dx = position.x - tree.position.x;
       const dz = position.z - tree.position.z;
       const dist2D = Math.sqrt(dx * dx + dz * dz);
       const combinedRadius = radius + tree.trunkRadius;
 
-      // Only collide with trunk if at trunk height
       if (dist2D < combinedRadius && position.y < 4) {
-        // Push out horizontally
         const pushDist = combinedRadius - dist2D;
         const safeDist = Math.max(dist2D, 0.0001);
-        const nx = dx / safeDist;
-        const nz = dz / safeDist;
-        position.x += nx * pushDist;
-        position.z += nz * pushDist;
+        position.x += (dx / safeDist) * pushDist;
+        position.z += (dz / safeDist) * pushDist;
         velocity.x *= 0.5;
         velocity.z *= 0.5;
         collided = true;
@@ -357,7 +418,7 @@ export class Environment {
   }
 
   /**
-   * Slow hawks significantly while flying through tree canopies.
+   * Slow hawks in tree canopies.
    */
   public applyHawkCanopySlow(
     position: THREE.Vector3,
@@ -371,11 +432,10 @@ export class Environment {
       const dx = position.x - tree.position.x;
       const dy = position.y - tree.canopyCenterY;
       const dz = position.z - tree.position.z;
-      const distance = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      if (distance < (tree.canopyRadius + radius)) {
-        const drag = Math.pow(0.2, deltaTime * 6);
-        velocity.multiplyScalar(drag);
+      if (distance < tree.canopyRadius + radius) {
+        velocity.multiplyScalar(Math.pow(0.2, deltaTime * 6));
         slowed = true;
       }
     }
@@ -384,7 +444,7 @@ export class Environment {
   }
 
   /**
-   * Cleanup
+   * Cleanup.
    */
   public dispose(): void {
     for (const building of this.buildings) {

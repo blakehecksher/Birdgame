@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { Food } from '../entities/Food';
 import { FoodType } from '../config/constants';
+import { GridCell } from './Environment';
+import { SeededRandom } from '../utils/SeededRandom';
+import { Building } from './Building';
+import { getModelByKey } from '../utils/ModelLoader';
 
 export interface FoodSnapshot {
   id: string;
@@ -12,14 +16,21 @@ export interface FoodSnapshot {
 
 /**
  * Spawns and manages all food entities.
+ * Food is distributed across park cells and streets using seeded random.
  */
 export class FoodSpawner {
   private scene: THREE.Scene;
   private foods: Map<string, Food> = new Map();
 
-  constructor(scene: THREE.Scene) {
+  constructor(
+    scene: THREE.Scene,
+    parkCells: GridCell[],
+    streetCenters: THREE.Vector3[],
+    buildings: Building[],
+    rng: SeededRandom
+  ) {
     this.scene = scene;
-    this.createInitialFoods();
+    this.createFoods(parkCells, streetCenters, buildings, rng);
   }
 
   public update(deltaTime: number): void {
@@ -80,53 +91,94 @@ export class FoodSpawner {
     this.foods.clear();
   }
 
-  private createInitialFoods(): void {
-    // Crumbs scattered around the park (park is -25 to +25)
-    const crumbPositions = [
-      { x: -12, z: -8 }, { x: -6, z: -15 }, { x: 3, z: -12 },
-      { x: 10, z: -18 }, { x: 15, z: -3 }, { x: -18, z: 3 },
-      { x: -8, z: 12 }, { x: 6, z: 8 }, { x: 14, z: 14 },
-      { x: -14, z: -20 }, { x: 0, z: 5 }, { x: 8, z: -6 },
-      { x: -20, z: -14 }, { x: 20, z: 12 }, { x: -3, z: 20 },
-      // A few on streets around the park
-      { x: -30, z: 0 }, { x: 30, z: 0 }, { x: 0, z: -30 },
-      { x: 0, z: 30 }, { x: -30, z: -30 },
-    ];
-    crumbPositions.forEach((pos, index) => {
-      this.addFood(`crumb-${index}`, FoodType.CRUMB, new THREE.Vector3(pos.x, 0.3, pos.z));
-    });
+  /**
+   * Distribute food across park cells and streets using seeded random.
+   */
+  private createFoods(
+    parkCells: GridCell[],
+    streetCenters: THREE.Vector3[],
+    buildings: Building[],
+    rng: SeededRandom
+  ): void {
+    const margin = 2;
 
-    // Bagels near park benches (benches at (0,-8), (0,8), (-8,0), (8,0))
-    const bagelPositions = [
-      new THREE.Vector3(1, 0.6, -8),
-      new THREE.Vector3(-1, 0.6, 8),
-      new THREE.Vector3(-8, 0.6, 1),
-      new THREE.Vector3(8, 0.6, -1),
-      new THREE.Vector3(0, 0.3, 0),
-    ];
-    bagelPositions.forEach((pos, index) => {
-      this.addFood(`bagel-${index}`, FoodType.BAGEL, pos);
-    });
+    // Crumbs scattered across park cells (30 total)
+    for (let i = 0; i < 30; i++) {
+      const cell = rng.pick(parkCells);
+      const half = cell.size / 2 - margin;
+      const x = cell.centerX + rng.nextFloat(-half, half);
+      const z = cell.centerZ + rng.nextFloat(-half, half);
+      this.addFood(`crumb-${i}`, FoodType.CRUMB, new THREE.Vector3(x, 0.3, z));
+    }
 
-    // Pizza on a street corner
-    this.addFood('pizza-0', FoodType.PIZZA, new THREE.Vector3(-28, 0.3, -28));
+    // Bagels in park cells (8 total)
+    for (let i = 0; i < 8; i++) {
+      const cell = rng.pick(parkCells);
+      const half = cell.size / 2 - margin;
+      const x = cell.centerX + rng.nextFloat(-half, half);
+      const z = cell.centerZ + rng.nextFloat(-half, half);
+      this.addFood(`bagel-${i}`, FoodType.BAGEL, new THREE.Vector3(x, 0.6, z));
+    }
 
-    // Rats along streets (between park and buildings)
-    const ratPositions = [
-      new THREE.Vector3(-30, 0.3, 10),
-      new THREE.Vector3(-30, 0.3, -10),
-      new THREE.Vector3(30, 0.3, 10),
-      new THREE.Vector3(30, 0.3, -10),
-      new THREE.Vector3(10, 0.3, 30),
-      new THREE.Vector3(-10, 0.3, -30),
-    ];
-    ratPositions.forEach((pos, index) => {
-      this.addFood(`rat-${index}`, FoodType.RAT, pos);
-    });
+    // Pizza on streets (3 total)
+    for (let i = 0; i < 3; i++) {
+      const center = rng.pick(streetCenters);
+      const x = center.x + rng.nextFloat(-1, 1);
+      const z = center.z + rng.nextFloat(-1, 1);
+      this.addFood(`pizza-${i}`, FoodType.PIZZA, new THREE.Vector3(x, 0.3, z));
+    }
+
+    this.addRooftopFoods(buildings, rng);
+
+    // Static rats removed. Hawk prey now comes from NPC rats/squirrels/pigeons.
+  }
+
+  private addRooftopFoods(buildings: Building[], rng: SeededRandom): void {
+    if (buildings.length === 0) return;
+
+    const roofMargin = 1.0;
+
+    // High-risk/high-reward rooftop food: mostly bagels and pizza.
+    for (let i = 0; i < 10; i++) {
+      const building = rng.pick(buildings);
+      const x = rng.nextFloat(building.min.x + roofMargin, building.max.x - roofMargin);
+      const z = rng.nextFloat(building.min.z + roofMargin, building.max.z - roofMargin);
+      this.addFood(`roof-bagel-${i}`, FoodType.BAGEL, new THREE.Vector3(x, building.max.y + 0.6, z));
+    }
+
+    for (let i = 0; i < 8; i++) {
+      const building = rng.pick(buildings);
+      const x = rng.nextFloat(building.min.x + roofMargin, building.max.x - roofMargin);
+      const z = rng.nextFloat(building.min.z + roofMargin, building.max.z - roofMargin);
+      this.addFood(`roof-pizza-${i}`, FoodType.PIZZA, new THREE.Vector3(x, building.max.y + 0.3, z));
+    }
+
+    // Keep rooftop crumbs minimal.
+    for (let i = 0; i < 2; i++) {
+      const building = rng.pick(buildings);
+      const x = rng.nextFloat(building.min.x + roofMargin, building.max.x - roofMargin);
+      const z = rng.nextFloat(building.min.z + roofMargin, building.max.z - roofMargin);
+      this.addFood(`roof-crumb-${i}`, FoodType.CRUMB, new THREE.Vector3(x, building.max.y + 0.25, z));
+    }
   }
 
   private addFood(id: string, type: FoodType, position: THREE.Vector3): void {
-    const food = new Food(id, type, position);
+    const modelKey = (() => {
+      switch (type) {
+        case FoodType.CRUMB:
+          return 'food/crumb';
+        case FoodType.BAGEL:
+          return 'food/bagel';
+        case FoodType.PIZZA:
+          return 'food/pizza';
+        case FoodType.RAT:
+          return 'food/rat';
+        default:
+          return null;
+      }
+    })();
+    const model = modelKey ? getModelByKey(modelKey) : null;
+    const food = new Food(id, type, position, model);
     this.foods.set(id, food);
     this.scene.add(food.mesh);
   }

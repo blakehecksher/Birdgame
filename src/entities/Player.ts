@@ -9,6 +9,7 @@ export class Player {
   public role: PlayerRole;
   public radius: number;
   private readonly baseRadius: number;
+  private modelOffsetQ: THREE.Quaternion;
 
   // Player state
   public isEating: boolean = false;
@@ -20,7 +21,7 @@ export class Player {
   // Bank physics state
   public bankVelocity: number = 0;
 
-  constructor(role: PlayerRole, initialPosition?: THREE.Vector3) {
+  constructor(role: PlayerRole, initialPosition?: THREE.Vector3, model?: THREE.Group | null) {
     this.role = role;
     this.position = initialPosition || new THREE.Vector3(0, 5, 0);
     this.rotation = new THREE.Euler(0, 0, 0);
@@ -28,8 +29,17 @@ export class Player {
     this.baseRadius = GAME_CONFIG.PLAYER_RADIUS;
     this.radius = this.baseRadius;
 
-    // Create bird mesh
-    this.mesh = this.createBirdMesh(role);
+    // Use loaded 3D model if available, otherwise fall back to procedural mesh
+    this.mesh = new THREE.Group();
+    if (model) {
+      this.mesh.add(model);
+      // GLB models: no rotation offset by default (adjust if model faces wrong way)
+      this.modelOffsetQ = new THREE.Quaternion();
+    } else {
+      this.mesh.add(this.createBirdMesh(role));
+      // Procedural mesh is built along +X; rotate +90° Y so it faces -Z (camera forward)
+      this.modelOffsetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+    }
     this.mesh.position.copy(this.position);
     this.setVisualScale(1);
   }
@@ -103,7 +113,6 @@ export class Player {
   private static _yawQ = new THREE.Quaternion();
   private static _pitchQ = new THREE.Quaternion();
   private static _attitudeQ = new THREE.Quaternion();
-  private static _modelOffsetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
   private static _rightAxis = new THREE.Vector3();
   private static _upAxis = new THREE.Vector3(0, 1, 0);
 
@@ -154,6 +163,47 @@ export class Player {
   }
 
   /**
+   * Swap the visual model (e.g. on role change between rounds).
+   * Disposes old children and replaces with new model content.
+   */
+  public swapModel(newModel: THREE.Group, offsetQ?: THREE.Quaternion): void {
+    // Save current transform
+    const pos = this.mesh.position.clone();
+    const scale = this.mesh.scale.clone();
+
+    // Dispose and remove old children
+    const oldChildren = [...this.mesh.children];
+    for (const child of oldChildren) {
+      this.mesh.remove(child);
+      // GLB models are cloned from shared cache resources; disposing here can
+      // invalidate another live player that references the same geometry.
+      if (child.userData.fromModelCache) {
+        continue;
+      }
+      child.traverse((node) => {
+        if (node instanceof THREE.Mesh) {
+          node.geometry.dispose();
+          if (node.material instanceof THREE.Material) {
+            node.material.dispose();
+          }
+        }
+      });
+    }
+
+    // Add new model
+    this.mesh.add(newModel);
+
+    // Update model offset if provided
+    if (offsetQ) {
+      this.modelOffsetQ.copy(offsetQ);
+    }
+
+    // Restore transform
+    this.mesh.position.copy(pos);
+    this.mesh.scale.copy(scale);
+  }
+
+  /**
    * Apply the correct quaternion rotation to the mesh (pitch + yaw + banking).
    * Call this whenever rotation is changed externally (e.g. network sync, reconciliation).
    */
@@ -176,7 +226,7 @@ export class Player {
       Player._attitudeQ.premultiply(Player._bankQ);
     }
 
-    this.mesh.quaternion.copy(Player._attitudeQ).multiply(Player._modelOffsetQ);
+    this.mesh.quaternion.copy(Player._attitudeQ).multiply(this.modelOffsetQ);
   }
 
   /**
@@ -193,6 +243,9 @@ export class Player {
    */
   public dispose(): void {
     this.mesh.traverse((child) => {
+      if (child.userData.fromModelCache) {
+        return;
+      }
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
         if (child.material instanceof THREE.Material) {

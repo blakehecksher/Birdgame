@@ -4,7 +4,7 @@ import * as THREE from 'three';
  * A city building with AABB collision bounds
  */
 export class Building {
-  public mesh: THREE.Mesh;
+  public mesh: THREE.Object3D;
   public min: THREE.Vector3;
   public max: THREE.Vector3;
 
@@ -13,21 +13,32 @@ export class Building {
     z: number,
     width: number,
     depth: number,
-    height: number
+    height: number,
+    model?: THREE.Group | null
   ) {
-    // Create box geometry
-    const geometry = new THREE.BoxGeometry(width, height, depth);
-    const material = new THREE.MeshLambertMaterial({
-      color: this.getDeterministicBuildingColor(x, z),
-    });
+    if (model) {
+      this.mesh = model;
+      this.mesh.position.set(x, height / 2, z);
+    } else {
+      // Procedural fallback
+      const geometry = new THREE.BoxGeometry(width, height, depth);
+      const material = new THREE.MeshLambertMaterial({
+        color: this.getDeterministicBuildingColor(x, z),
+      });
 
-    this.mesh = new THREE.Mesh(geometry, material);
-    this.mesh.position.set(x, height / 2, z); // Y is half-height so base sits on ground
-    this.mesh.castShadow = true;
-    this.mesh.receiveShadow = true;
+      const body = new THREE.Mesh(geometry, material);
+      body.castShadow = true;
+      body.receiveShadow = true;
 
-    // Add window details
-    this.addWindows(width, height, depth);
+      const root = new THREE.Group();
+      root.position.set(x, height / 2, z); // Y is half-height so base sits on ground
+      root.add(body);
+
+      this.mesh = root;
+
+      // Add window details
+      this.addWindows(body, width, height, depth);
+    }
 
     // Set AABB bounds
     this.min = new THREE.Vector3(
@@ -45,7 +56,7 @@ export class Building {
   /**
    * Add simple window pattern to building using a second mesh overlay
    */
-  private addWindows(width: number, height: number, depth: number): void {
+  private addWindows(target: THREE.Object3D, width: number, height: number, depth: number): void {
     // Create a slightly larger mesh with window texture effect
     // Simple approach: add darker strips to simulate window rows
     const windowColor = 0x88bbdd;
@@ -67,7 +78,7 @@ export class Building {
       );
       // Position relative to mesh center (mesh is at y=height/2)
       windowFront.position.set(0, y - height / 2, depth / 2 + 0.01);
-      this.mesh.add(windowFront);
+      target.add(windowFront);
 
       // Windows on back face (z-)
       const windowBack = new THREE.Mesh(
@@ -76,7 +87,7 @@ export class Building {
       );
       windowBack.position.set(0, y - height / 2, -depth / 2 - 0.01);
       windowBack.rotation.y = Math.PI;
-      this.mesh.add(windowBack);
+      target.add(windowBack);
     }
   }
 
@@ -151,9 +162,13 @@ export class Building {
   }
 
   public dispose(): void {
-    this.mesh.geometry.dispose();
-    if (this.mesh.material instanceof THREE.Material) {
-      this.mesh.material.dispose();
-    }
+    this.mesh.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose();
+        }
+      }
+    });
   }
 }
