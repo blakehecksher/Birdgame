@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hawk & Pigeon</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        overflow: hidden;
+        background-color: #000;
+      }
+
+      #game-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #ui-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      #ui-overlay > * {
+        pointer-events: auto;
+      }
+
+      #lobby {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.85);
+        padding: 2rem;
+        border-radius: 8px;
+        color: white;
+        text-align: center;
+        min-width: 400px;
+      }
+
+      #lobby h1 {
+        margin-bottom: 1.5rem;
+        font-size: 2.5rem;
+      }
+
+      #lobby button {
+        background: #4CAF50;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 8px;
+        min-width: 120px;
+      }
+
+      #lobby button:hover {
+        background: #45a049;
+      }
+
+      #lobby input {
+        padding: 10px;
+        font-size: 16px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        width: 100%;
+        margin: 8px 0;
+      }
+
+      #room-code {
+        font-size: 2rem;
+        font-weight: bold;
+        letter-spacing: 4px;
+        color: #4CAF50;
+        margin: 12px 0;
+      }
+
+      #room-link {
+        font-size: 12px;
+        color: #aaa;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+      }
+
+      #copy-link-btn {
+        background: #2196F3 !important;
+        min-width: 100px !important;
+      }
+
+      #copy-link-btn:hover {
+        background: #0b7dda !important;
+      }
+
+      #hud {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        color: white;
+        font-size: 16px;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        display: none;
+        background: rgba(0, 0, 0, 0.4);
+        padding: 12px 16px;
+        border-radius: 8px;
+      }
+
+      #hud .stat {
+        margin-bottom: 6px;
+      }
+
+      .bar-container {
+        width: 180px;
+        height: 14px;
+        background: rgba(0, 0, 0, 0.5);
+        border-radius: 7px;
+        overflow: hidden;
+        margin-top: 3px;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: 7px;
+        transition: width 0.3s ease;
+      }
+
+      .bar-weight {
+        background: linear-gradient(90deg, #9999ff, #cc88ff);
+      }
+
+      .bar-energy {
+        background: linear-gradient(90deg, #ff4444, #ffaa00, #44ff44);
+      }
+
+      #eating-indicator {
+        color: #ffcc00;
+        font-weight: bold;
+        display: none;
+        margin-top: 4px;
+      }
+
+      #score-screen {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.9);
+        padding: 3rem;
+        border-radius: 8px;
+        color: white;
+        text-align: center;
+        display: none;
+        min-width: 500px;
+      }
+
+      #score-screen h2 {
+        margin-bottom: 1.5rem;
+        font-size: 2rem;
+      }
+
+      #score-screen .score-item {
+        margin: 12px 0;
+        font-size: 1.2rem;
+      }
+
+      #score-screen button {
+        background: #2196F3;
+        color: white;
+        border: none;
+        padding: 12px 32px;
+        font-size: 18px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-top: 20px;
+      }
+
+      #score-screen button:hover {
+        background: #0b7dda;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      /* Instructions overlay */
+      #instructions {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.85);
+        padding: 2.5rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        display: none;
+        min-width: 450px;
+        z-index: 10;
+      }
+
+      #instructions h2 {
+        margin-bottom: 1rem;
+        font-size: 1.8rem;
+      }
+
+      #instructions .controls {
+        text-align: left;
+        margin: 1rem auto;
+        max-width: 350px;
+      }
+
+      #instructions .controls div {
+        margin: 6px 0;
+        font-size: 1.1rem;
+      }
+
+      #instructions .controls span {
+        display: inline-block;
+        background: rgba(255,255,255,0.15);
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-family: monospace;
+        margin-right: 8px;
+        min-width: 80px;
+        text-align: center;
+      }
+
+      #instructions .dismiss {
+        margin-top: 1.5rem;
+        color: #aaa;
+        font-size: 0.9rem;
+      }
+
+      /* Disconnect overlay */
+      #disconnect-overlay {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.9);
+        padding: 2.5rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        display: none;
+        min-width: 400px;
+        z-index: 20;
+      }
+
+      #disconnect-overlay h2 {
+        color: #ff4444;
+        margin-bottom: 1rem;
+      }
+
+      #disconnect-overlay p {
+        margin-bottom: 1.5rem;
+        color: #ccc;
+      }
+
+      #disconnect-return-btn {
+        background: #2196F3;
+        color: white;
+        border: none;
+        padding: 12px 32px;
+        font-size: 16px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+
+      #disconnect-return-btn:hover {
+        background: #0b7dda;
+      }
+
+      /* Connection status */
+      #connection-status {
+        position: absolute;
+        top: 20px;
+        right: 60px;
+        display: none;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #aaa;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        pointer-events: none;
+      }
+
+      #connection-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        background: #44ff44;
+      }
+
+      /* Dive indicator */
+      #dive-indicator {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        color: #ff4444;
+        font-size: 18px;
+        font-weight: bold;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        display: none;
+        background: rgba(0, 0, 0, 0.4);
+        padding: 6px 12px;
+        border-radius: 6px;
+      }
+
+      /* Crosshair */
+      #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 20px;
+        height: 20px;
+        pointer-events: none;
+        display: none;
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: '';
+        position: absolute;
+        background: rgba(255, 255, 255, 0.5);
+      }
+
+      #crosshair::before {
+        width: 2px;
+        height: 20px;
+        left: 9px;
+        top: 0;
+      }
+
+      #crosshair::after {
+        width: 20px;
+        height: 2px;
+        left: 0;
+        top: 9px;
+      }
+    </style>
+    <script type="module" crossorigin src="/Birdgame/assets/index-ClRXg2TL.js"></script>
+  </head>
+  <body>
+    <canvas id="game-canvas"></canvas>
+
+    <div id="ui-overlay">
+      <!-- Lobby UI -->
+      <div id="lobby">
+        <h1>Hawk & Pigeon</h1>
+        <p style="margin-bottom: 20px;">Web-based 3D chase game</p>
+
+        <div id="lobby-menu">
+          <button id="host-btn">Host Game</button>
+          <button id="join-btn">Join Game</button>
+        </div>
+
+        <div id="host-screen" class="hidden">
+          <p>Share this link with your friend:</p>
+          <div id="room-code"></div>
+          <input type="text" id="room-link" readonly />
+          <button id="copy-link-btn">Copy Link</button>
+          <input type="hidden" id="peer-id-display" />
+          <p style="margin-top: 16px; color: #aaa;">Waiting for player to join...</p>
+        </div>
+
+        <div id="join-screen" class="hidden">
+          <p>Enter room code:</p>
+          <input type="text" id="peer-id-input" placeholder="e.g. HAWK42" style="text-transform: uppercase; letter-spacing: 2px; text-align: center;" />
+          <button id="connect-btn">Connect</button>
+          <button id="back-btn">Back</button>
+        </div>
+      </div>
+
+      <!-- HUD -->
+      <div id="hud">
+        <div class="stat" id="role-display">Role: -</div>
+        <div class="stat" id="weight-display">
+          Weight: <span id="weight-value">1.0</span>
+          <div class="bar-container"><div class="bar-fill bar-weight" id="weight-bar" style="width: 5%"></div></div>
+        </div>
+        <div class="stat" id="energy-display">
+          Energy: <span id="energy-value">100</span>
+          <div class="bar-container"><div class="bar-fill bar-energy" id="energy-bar" style="width: 100%"></div></div>
+        </div>
+        <div class="stat" id="timer-display">Time: 3:00</div>
+        <div id="eating-indicator">Eating...</div>
+      </div>
+
+      <!-- Score Screen -->
+      <div id="score-screen">
+        <h2 id="score-title">Round Over!</h2>
+        <div id="score-details"></div>
+        <button id="next-round-btn">Next Round</button>
+      </div>
+
+      <!-- Instructions Overlay -->
+      <div id="instructions">
+        <h2>How to Play</h2>
+        <div class="controls">
+          <div><span>W A S D</span> Move</div>
+          <div><span>Space</span> Fly up</div>
+          <div><span>Shift</span> Fly down</div>
+          <div><span>Mouse</span> Look around</div>
+        </div>
+        <p style="margin-top: 1rem; font-size: 1rem; color: #ccc;">
+          <strong>Pigeon:</strong> Eat food, get fat, survive!<br>
+          <strong>Hawk:</strong> Catch the pigeon before time runs out!
+        </p>
+        <p class="dismiss">Click to start</p>
+      </div>
+
+      <!-- Disconnect Overlay -->
+      <div id="disconnect-overlay">
+        <h2>Connection Lost</h2>
+        <p id="disconnect-status">Attempting to reconnect...</p>
+        <button id="disconnect-return-btn">Return to Lobby</button>
+      </div>
+
+      <!-- Connection Status -->
+      <div id="connection-status">
+        <span id="connection-dot"></span>
+      </div>
+
+      <!-- Dive Indicator -->
+      <div id="dive-indicator">DIVING</div>
+
+      <!-- Crosshair -->
+      <div id="crosshair"></div>
+    </div>
+
+  </body>
+</html>
