@@ -101,7 +101,7 @@ export class Game {
     if (roomCode) {
       // Auto-join with the room code
       this.lobbyUI.showConnecting();
-      this.joinGame(`birdgame-${roomCode.toUpperCase()}`);
+      this.joinGame(roomCode);
     }
 
     // Start render loop (even before game starts)
@@ -163,11 +163,12 @@ export class Game {
     try {
       this.lobbyUI.showConnecting();
 
-      // If user entered a raw room code (no prefix), add it
-      let fullPeerId = hostPeerId.trim().toUpperCase();
-      if (!fullPeerId.startsWith('birdgame-')) {
-        fullPeerId = `birdgame-${fullPeerId}`;
-      }
+      // Normalize accepted inputs:
+      // - "ABC123"
+      // - "birdgame-ABC123" (any case)
+      const rawInput = hostPeerId.trim();
+      const roomCode = rawInput.replace(/^birdgame-/i, '').toUpperCase();
+      const fullPeerId = `birdgame-${roomCode}`;
 
       // Initialize peer connection as client
       this.peerConnection = new PeerConnection();

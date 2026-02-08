@@ -84,10 +84,17 @@ export class LobbyUI {
     }
   }
 
+  private resetJoinControls(): void {
+    this.peerIdInput.disabled = false;
+    this.connectBtn.disabled = false;
+    this.connectBtn.textContent = 'Connect';
+  }
+
   /**
    * Show main lobby menu
    */
   public showMainMenu(): void {
+    this.resetJoinControls();
     this.lobbyMenu.classList.remove('hidden');
     this.hostScreen.classList.add('hidden');
     this.joinScreen.classList.add('hidden');
@@ -106,6 +113,7 @@ export class LobbyUI {
    * Show join screen
    */
   private showJoinScreen(): void {
+    this.resetJoinControls();
     this.lobbyMenu.classList.add('hidden');
     this.hostScreen.classList.add('hidden');
     this.joinScreen.classList.remove('hidden');
