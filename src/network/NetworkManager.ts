@@ -37,6 +37,7 @@ export class NetworkManager {
     ascend: 0,
     mouseX: 0,
     mouseY: 0,
+    scrollDelta: 0,
   };
   private pendingRemoteMouseX: number = 0;
   private pendingRemoteMouseY: number = 0;
@@ -46,6 +47,7 @@ export class NetworkManager {
     ascend: 0,
     mouseX: 0,
     mouseY: 0,
+    scrollDelta: 0,
   };
   private pendingLocalMouseX: number = 0;
   private pendingLocalMouseY: number = 0;
@@ -309,6 +311,7 @@ export class NetworkManager {
       ascend: this.remoteInputAxes.ascend,
       mouseX: this.pendingRemoteMouseX,
       mouseY: this.pendingRemoteMouseY,
+      scrollDelta: 0, // Scroll is local-only (camera zoom), not synced
     };
 
     // Consume mouse deltas so they are applied only once.

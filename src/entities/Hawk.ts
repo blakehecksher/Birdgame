@@ -60,7 +60,7 @@ export class Hawk {
     // Dive speed bonus: scale with pitch angle (steeper = faster)
     if (this.isDiving) {
       const pitch = this.player.rotation.x; // negative when looking down
-      const maxPitch = GAME_CONFIG.MAX_PITCH;
+      const maxPitch = GAME_CONFIG.HAWK_MAX_PITCH;
       const diveFraction = Math.min(1.0, Math.abs(pitch) / maxPitch);
       const diveBonus = 1.0 + diveFraction * (GAME_CONFIG.HAWK_DIVE_MAX_SPEED_MULT - 1.0);
       mult *= diveBonus;

@@ -7,6 +7,8 @@ export class CameraController {
   private currentPosition: THREE.Vector3;
   private raycaster: THREE.Raycaster;
   private collisionMeshes: THREE.Object3D[] = [];
+  private currentDistance: number = GAME_CONFIG.CAMERA_DISTANCE;
+  private targetDistance: number = GAME_CONFIG.CAMERA_DISTANCE;
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -23,16 +25,36 @@ export class CameraController {
   }
 
   /**
+   * Adjust camera zoom distance from scroll input
+   */
+  public adjustZoom(scrollDelta: number): void {
+    this.targetDistance += scrollDelta * GAME_CONFIG.CAMERA_ZOOM_SPEED;
+    this.targetDistance = Math.max(
+      GAME_CONFIG.CAMERA_ZOOM_MIN,
+      Math.min(GAME_CONFIG.CAMERA_ZOOM_MAX, this.targetDistance)
+    );
+  }
+
+  /**
    * Update camera to follow a target object
    * @param targetObject The object to follow (player mesh)
    * @param targetRotation The rotation of the object
+   * @param scrollDelta Scroll wheel input for zoom
    */
-  public update(targetObject: THREE.Object3D, targetRotation: THREE.Euler): void {
+  public update(targetObject: THREE.Object3D, targetRotation: THREE.Euler, scrollDelta: number = 0): void {
+    // Handle zoom input
+    if (scrollDelta !== 0) {
+      this.adjustZoom(scrollDelta);
+    }
+
+    // Smoothly interpolate distance
+    this.currentDistance += (this.targetDistance - this.currentDistance) * GAME_CONFIG.CAMERA_LERP_FACTOR;
+
     // Calculate desired camera position behind and above the player
     const offset = new THREE.Vector3(
       0,
       GAME_CONFIG.CAMERA_HEIGHT,
-      GAME_CONFIG.CAMERA_DISTANCE
+      this.currentDistance
     );
 
     // Rotate offset based on player's rotation (only yaw, not pitch)
@@ -77,7 +99,7 @@ export class CameraController {
     const offset = new THREE.Vector3(
       0,
       GAME_CONFIG.CAMERA_HEIGHT,
-      GAME_CONFIG.CAMERA_DISTANCE
+      this.currentDistance
     );
 
     const yawRotation = new THREE.Euler(0, targetRotation.y, 0);

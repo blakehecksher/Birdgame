@@ -8,6 +8,7 @@ export class Player {
   public velocity: THREE.Vector3;
   public role: PlayerRole;
   public radius: number;
+  private readonly baseRadius: number;
 
   // Player state
   public isEating: boolean = false;
@@ -16,16 +17,21 @@ export class Player {
   // Speed multiplier (affected by weight/energy)
   public speedMultiplier: number = 1.0;
 
+  // Bank physics state
+  public bankVelocity: number = 0;
+
   constructor(role: PlayerRole, initialPosition?: THREE.Vector3) {
     this.role = role;
     this.position = initialPosition || new THREE.Vector3(0, 5, 0);
     this.rotation = new THREE.Euler(0, 0, 0);
     this.velocity = new THREE.Vector3(0, 0, 0);
-    this.radius = GAME_CONFIG.PLAYER_RADIUS;
+    this.baseRadius = GAME_CONFIG.PLAYER_RADIUS;
+    this.radius = this.baseRadius;
 
     // Create bird mesh
     this.mesh = this.createBirdMesh(role);
     this.mesh.position.copy(this.position);
+    this.setVisualScale(1);
   }
 
   private createBirdMesh(role: PlayerRole): THREE.Group {
@@ -91,6 +97,16 @@ export class Player {
     return group;
   }
 
+  // Reusable objects to avoid per-frame allocation
+  private static _forward = new THREE.Vector3();
+  private static _bankQ = new THREE.Quaternion();
+  private static _yawQ = new THREE.Quaternion();
+  private static _pitchQ = new THREE.Quaternion();
+  private static _attitudeQ = new THREE.Quaternion();
+  private static _modelOffsetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+  private static _rightAxis = new THREE.Vector3();
+  private static _upAxis = new THREE.Vector3(0, 1, 0);
+
   /**
    * Update player state
    */
@@ -98,10 +114,9 @@ export class Player {
     // Update position from velocity
     this.position.add(this.velocity.clone().multiplyScalar(deltaTime));
 
-    // Update mesh position and rotation
+    // Update mesh transform
     this.mesh.position.copy(this.position);
-    // Apply player rotation with +90 degree offset on Y axis to correct bird facing direction
-    this.mesh.rotation.set(this.rotation.x, this.rotation.y + Math.PI / 2, this.rotation.z);
+    this.applyMeshRotation();
 
     // Handle eating timer
     if (this.isEating) {
@@ -127,6 +142,41 @@ export class Player {
    */
   public getCurrentSpeed(): number {
     return this.getBaseSpeed() * this.speedMultiplier;
+  }
+
+  /**
+   * Set a uniform visual scale and keep collision radius aligned with it.
+   */
+  public setVisualScale(scale: number): void {
+    const safeScale = Math.max(0.1, scale);
+    this.mesh.scale.setScalar(safeScale);
+    this.radius = this.baseRadius * safeScale;
+  }
+
+  /**
+   * Apply the correct quaternion rotation to the mesh (pitch + yaw + banking).
+   * Call this whenever rotation is changed externally (e.g. network sync, reconciliation).
+   */
+  public applyMeshRotation(): void {
+    // Compose explicit aircraft attitude:
+    // 1) yaw around world up
+    // 2) pitch around the bird's local right after yaw
+    // 3) roll around the bird's local forward after yaw+pitch
+    // Then apply model axis offset (+90deg Y) because mesh geometry points along +X.
+    Player._yawQ.setFromAxisAngle(Player._upAxis, this.rotation.y);
+    Player._attitudeQ.copy(Player._yawQ);
+
+    Player._rightAxis.set(1, 0, 0).applyQuaternion(Player._attitudeQ);
+    Player._pitchQ.setFromAxisAngle(Player._rightAxis, this.rotation.x);
+    Player._attitudeQ.premultiply(Player._pitchQ);
+
+    if (Math.abs(this.rotation.z) > 0.001) {
+      Player._forward.set(0, 0, -1).applyQuaternion(Player._attitudeQ);
+      Player._bankQ.setFromAxisAngle(Player._forward, this.rotation.z);
+      Player._attitudeQ.premultiply(Player._bankQ);
+    }
+
+    this.mesh.quaternion.copy(Player._attitudeQ).multiply(Player._modelOffsetQ);
   }
 
   /**

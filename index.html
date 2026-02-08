@@ -403,37 +403,56 @@
         border-radius: 6px;
       }
 
-      /* Crosshair */
-      #crosshair {
+      /* Flight attitude indicator (thumbstick style) */
+      #flight-indicator {
         position: absolute;
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        width: 20px;
-        height: 20px;
+        width: 70px;
+        height: 70px;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-radius: 50%;
         pointer-events: none;
         display: none;
+        z-index: 5;
       }
 
-      #crosshair::before,
-      #crosshair::after {
+      #flight-dot {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        background: rgba(255, 255, 255, 0.7);
+        border-radius: 50%;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 4px rgba(255, 255, 255, 0.4);
+        transition: none;
+      }
+
+      /* Small crosshair lines at center */
+      #flight-indicator::before,
+      #flight-indicator::after {
         content: '';
         position: absolute;
-        background: rgba(255, 255, 255, 0.5);
+        background: rgba(255, 255, 255, 0.15);
       }
 
-      #crosshair::before {
-        width: 2px;
-        height: 20px;
-        left: 9px;
+      #flight-indicator::before {
+        width: 1px;
+        height: 100%;
+        left: 50%;
         top: 0;
+        transform: translateX(-50%);
       }
 
-      #crosshair::after {
-        width: 20px;
-        height: 2px;
+      #flight-indicator::after {
+        width: 100%;
+        height: 1px;
         left: 0;
-        top: 9px;
+        top: 50%;
+        transform: translateY(-50%);
       }
     </style>
   </head>
@@ -497,10 +516,12 @@
       <div id="instructions">
         <h2>How to Play</h2>
         <div class="controls">
-          <div><span>W A S D</span> Move</div>
+          <div><span>W</span> Thrust forward</div>
+          <div><span>A / D</span> Bank left / right (turn)</div>
           <div><span>Space</span> Fly up</div>
           <div><span>Shift</span> Fly down</div>
-          <div><span>Mouse</span> Look around</div>
+          <div><span>Mouse Y</span> Pitch up / down</div>
+          <div><span>Scroll</span> Zoom camera</div>
         </div>
         <p style="margin-top: 1rem; font-size: 1rem; color: #ccc;">
           <strong>Pigeon:</strong> Eat food, get fat, survive!<br>
@@ -524,8 +545,10 @@
       <!-- Dive Indicator -->
       <div id="dive-indicator">DIVING</div>
 
-      <!-- Crosshair -->
-      <div id="crosshair"></div>
+      <!-- Flight attitude indicator -->
+      <div id="flight-indicator">
+        <div id="flight-dot"></div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

@@ -4,17 +4,24 @@ export const GAME_CONFIG = {
   // Round settings
   ROUND_DURATION: 180, // 3 minutes in seconds
 
-  // Pigeon settings
-  PIGEON_BASE_SPEED: 4.0,
-  PIGEON_TURN_RADIUS: 2.0,
-  PIGEON_INITIAL_WEIGHT: 1.0,
+  // Pigeon parameters
+  PIGEON_BASE_SPEED: 8.0,
+  PIGEON_TURN_RADIUS: 0.25,
+  PIGEON_INITIAL_WEIGHT: .50,
   PIGEON_MIN_SPEED: 0.5, // Minimum speed multiplier at max weight
   PIGEON_WEIGHT_PENALTY: 0.05, // Speed reduction per weight unit
-  PIGEON_SIZE_SCALE: 0.1, // Visual size increase per weight unit
+  PIGEON_SIZE_SCALE: 0.05, // Visual size increase per weight unit
+  PIGEON_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  PIGEON_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
+  PIGEON_BANK_ACCELERATION: 12.0,
+  PIGEON_BANK_SPRING_STIFFNESS: 12.0,
+  PIGEON_BANK_DAMPING: 4.0,
+  PIGEON_MAX_BANK_ANGLE: Math.PI / 3,
+  PIGEON_BANK_TURN_COUPLING: 2.0, // How much banking increases turn rate
 
-  // Hawk settings
+  // Hawk parameters
   HAWK_BASE_SPEED: 10.0,
-  HAWK_TURN_RADIUS: 5.0,
+  HAWK_TURN_RADIUS: 2.0,
   HAWK_INITIAL_ENERGY: 100,
   HAWK_ENERGY_DRAIN_RATE: 1.0, // Energy per second
   HAWK_LOW_ENERGY_THRESHOLD: 25,
@@ -22,16 +29,26 @@ export const GAME_CONFIG = {
   HAWK_BOOSTED_SPEED_MULT: 1.2, // When well-fed (>75 energy)
   HAWK_DIVE_MAX_SPEED_MULT: 2.0, // Max speed multiplier at steepest dive
   HAWK_DIVE_ENERGY_DRAIN_MULT: 2.5, // Extra energy drain while diving
+  HAWK_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  HAWK_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
+  HAWK_BANK_ACCELERATION: 8.0,
+  HAWK_BANK_SPRING_STIFFNESS: 6.0,
+  HAWK_BANK_DAMPING: 4.0,
+  HAWK_MAX_BANK_ANGLE: Math.PI / 3,
+  HAWK_BANK_TURN_COUPLING: 1.0, // Hawks bank less aggressively than pigeons
 
   // Player physics
   PLAYER_RADIUS: 1.5, // Collision sphere radius
   AIR_RESISTANCE: 0.9, // Velocity multiplier per frame
-  MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
 
   // Camera settings
   CAMERA_DISTANCE: 5,
   CAMERA_HEIGHT: 2,
-  CAMERA_LERP_FACTOR: 0.1,
+  CAMERA_LERP_FACTOR: 0.18,
+  CAMERA_BANK_FOLLOW: 0.3,
+  CAMERA_ZOOM_MIN: 3.0,
+  CAMERA_ZOOM_MAX: 12.0,
+  CAMERA_ZOOM_SPEED: 1.5,
 
   // Network settings
   TICK_RATE: 20, // Updates per second
@@ -57,10 +74,6 @@ export const GAME_CONFIG = {
   BUILDING_MIN_HEIGHT: 10, // ~3 stories
   BUILDING_MAX_HEIGHT: 25, // ~8 stories
   PARK_SIZE: 50,
-
-  // Input sensitivity
-  MOUSE_SENSITIVITY: 0.002,
-  MOVEMENT_SPEED: 1.0,
 } as const;
 
 // Food types

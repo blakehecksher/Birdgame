@@ -1,14 +1,16 @@
 export interface InputState {
-  forward: number; // -1 to 1
-  strafe: number; // -1 to 1
+  forward: number; // 0 to 1 (W only)
+  strafe: number; // -1 to 1 (bank input: A/D)
   ascend: number; // -1 to 1
   mouseX: number; // Mouse delta X
   mouseY: number; // Mouse delta Y
+  scrollDelta: number; // Scroll wheel delta for camera zoom
 }
 
 export class InputManager {
   private keys: Set<string> = new Set();
   private mouseDelta: { x: number; y: number } = { x: 0, y: 0 };
+  private scrollDelta: number = 0;
   private canvas: HTMLCanvasElement;
   private isPointerLocked: boolean = false;
   private readonly keyDownHandler: (e: KeyboardEvent) => void;
@@ -16,6 +18,7 @@ export class InputManager {
   private readonly canvasClickHandler: () => void;
   private readonly pointerLockHandler: () => void;
   private readonly mouseMoveHandler: (e: MouseEvent) => void;
+  private readonly wheelHandler: (e: WheelEvent) => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -24,6 +27,7 @@ export class InputManager {
     this.canvasClickHandler = () => this.requestPointerLock();
     this.pointerLockHandler = () => this.onPointerLockChange();
     this.mouseMoveHandler = (e) => this.onMouseMove(e);
+    this.wheelHandler = (e) => this.onWheel(e);
     this.setupEventListeners();
   }
 
@@ -36,6 +40,7 @@ export class InputManager {
     this.canvas.addEventListener('click', this.canvasClickHandler);
     document.addEventListener('pointerlockchange', this.pointerLockHandler);
     document.addEventListener('mousemove', this.mouseMoveHandler);
+    this.canvas.addEventListener('wheel', this.wheelHandler, { passive: false });
   }
 
   private onKeyDown(event: KeyboardEvent): void {
@@ -63,6 +68,11 @@ export class InputManager {
     }
   }
 
+  private onWheel(event: WheelEvent): void {
+    event.preventDefault();
+    this.scrollDelta += Math.sign(event.deltaY);
+  }
+
   /**
    * Get current input state
    */
@@ -73,11 +83,11 @@ export class InputManager {
       ascend: 0,
       mouseX: this.mouseDelta.x,
       mouseY: this.mouseDelta.y,
+      scrollDelta: this.scrollDelta,
     };
 
-    // Forward/backward (W/S)
+    // Forward thrust (W only)
     if (this.keys.has('KeyW')) input.forward += 1;
-    if (this.keys.has('KeyS')) input.forward -= 1;
 
     // Strafe left/right (A/D)
     if (this.keys.has('KeyD')) input.strafe += 1;
@@ -87,9 +97,10 @@ export class InputManager {
     if (this.keys.has('Space')) input.ascend += 1;
     if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) input.ascend -= 1;
 
-    // Reset mouse delta after reading
+    // Reset deltas after reading
     this.mouseDelta.x = 0;
     this.mouseDelta.y = 0;
+    this.scrollDelta = 0;
 
     return input;
   }
@@ -124,6 +135,7 @@ export class InputManager {
     this.keys.clear();
     this.mouseDelta.x = 0;
     this.mouseDelta.y = 0;
+    this.scrollDelta = 0;
   }
 
   public dispose(): void {
@@ -132,5 +144,6 @@ export class InputManager {
     this.canvas.removeEventListener('click', this.canvasClickHandler);
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     document.removeEventListener('mousemove', this.mouseMoveHandler);
+    this.canvas.removeEventListener('wheel', this.wheelHandler);
   }
 }

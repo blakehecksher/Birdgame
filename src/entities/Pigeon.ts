@@ -39,7 +39,7 @@ export class Pigeon {
     );
     this.player.speedMultiplier = speedMultiplier;
 
-    const scale = 1 + (this.weight * GAME_CONFIG.PIGEON_SIZE_SCALE);
-    this.player.mesh.scale.setScalar(scale);
+    const scale = 0.5 + (this.weight * GAME_CONFIG.PIGEON_SIZE_SCALE);
+    this.player.setVisualScale(scale);
   }
 }

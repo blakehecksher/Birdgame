@@ -1,7 +1,7 @@
 # Hawk & Pigeon - Development Status
 
 **Project Started:** February 6, 2025
-**Last Updated:** February 7, 2026
+**Last Updated:** February 8, 2026
 
 ## Project Overview
 
@@ -199,14 +199,14 @@ Building a web-based 3D multiplayer chase game where two players compete as a pi
 - [x] New round starts with reset states (weight=1, energy=100)
 - [x] Birds stay in sync during gameplay
 - [x] Birds face forward correctly
-- [ ] Pigeon collects food and gains weight (needs playtest)
-- [ ] Pigeon speed decreases as weight increases (needs playtest)
-- [ ] Pigeon visually scales up with weight (needs playtest)
+- [x] Pigeon collects food and gains weight
+- [x] Pigeon speed decreases as weight increases
+- [x] Pigeon visually scales up with weight
 - [x] Hawk energy drains over time
 - [x] Hawk eating rats restores energy
 - [x] Buildings block player movement
-- [ ] Round timer counts down and pigeon wins at 0 (needs playtest)
-- [ ] Instructions overlay shows and dismisses (needs playtest)
+- [x] Round timer counts down and pigeon wins at 0
+- [x] Instructions overlay shows and dismisses
 
 ---
 
@@ -243,6 +243,37 @@ Building a web-based 3D multiplayer chase game where two players compete as a pi
 
 ---
 
+### Session Log (Feb 7, 2026 - Codex)
+
+**Focus:** Friend-share networking flow, deployment hardening, and lobby UX polish.
+
+**Completed Networking/Deployment Work:**
+- Added shareable room-code flow with URL auto-join (`?room=CODE`).
+- Added reconnect/disconnect UX (connection state indicator + disconnect overlay).
+- Added join/host recovery handling so failed joins do not leave controls stuck.
+- Fixed room-link join bug caused by case-sensitive room-code prefix handling.
+- Set up GitHub Pages deployment pipeline (`vite` base path + deploy script).
+- Verified deployment approach and documented publish flow in `DEPLOYMENT.md`.
+
+**Completed UI/Lobby Work:**
+- Integrated `assets/Landing Page.png` into lobby.
+- Refined lobby composition to a single container with two distinct visual sections:
+  - Top hero image section
+  - Bottom lobby control band
+- Removed overlaid lobby title text from the hero image and moved subtitle into the lower band.
+
+**Technical Notes / Decisions:**
+- `main` remains source-of-truth for code; deployed site is built output.
+- `npm run deploy` publishes the production build to GitHub Pages (separate from normal code push).
+- Keep networking join codes normalized to one canonical peer-id format to avoid silent connect failures.
+
+**Handoff Status:**
+- Multiplayer state sync is stable in playtests.
+- Room-link join flow is functional after normalization fix.
+- Lobby visual direction is now aligned with current design sketch.
+
+---
+
 ## Future Feature Plans
 
 ### Wing Flapping Animation (designed, not yet implemented)
@@ -271,6 +302,10 @@ Replace static rat food items with moving AI animals:
 
 **Files to create:** NPCAnimal.ts, NPCSpawner.ts
 **Files to modify:** constants.ts, FoodSpawner.ts, GameState.ts, messages.ts, NetworkManager.ts, Game.ts
+
+### Art Direction (target style, not yet implemented)
+
+Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon body, stylized hawk with spread wings, warm color palette (oranges, purples, yellows), soft rounded building geometry. Characters should feel chunky and expressive, not realistic. The pigeon should look comically round and greedy; the hawk should look sleek and menacing with extended wingspan.
 
 ---
 

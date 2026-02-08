@@ -13,7 +13,7 @@ import { NetworkManager } from '../network/NetworkManager';
 import { FoodCollectedMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
 import { ScoreUI } from '../ui/ScoreUI';
-import { PlayerRole, RoundState, FoodType } from '../config/constants';
+import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
 import { FoodSpawner } from '../world/FoodSpawner';
 import { Environment } from '../world/Environment';
 
@@ -271,8 +271,8 @@ export class Game {
     this.lobbyUI.hide();
     const hud = document.getElementById('hud');
     if (hud) hud.style.display = 'block';
-    const crosshair = document.getElementById('crosshair');
-    if (crosshair) crosshair.style.display = 'block';
+    const flightIndicator = document.getElementById('flight-indicator');
+    if (flightIndicator) flightIndicator.style.display = 'block';
     const connStatus = document.getElementById('connection-status');
     if (connStatus) connStatus.style.display = 'flex';
 
@@ -430,11 +430,7 @@ export class Game {
 
             // Apply host-authoritative transform directly on client.
             this.remotePlayer.mesh.position.copy(this.remotePlayer.position);
-            this.remotePlayer.mesh.rotation.set(
-              this.remotePlayer.rotation.x,
-              this.remotePlayer.rotation.y + Math.PI / 2,
-              this.remotePlayer.rotation.z
-            );
+            this.remotePlayer.applyMeshRotation();
           }
         }
 
@@ -455,7 +451,7 @@ export class Game {
     }
 
     // Update camera to follow local player
-    this.cameraController.update(this.localPlayer.mesh, this.localPlayer.rotation);
+    this.cameraController.update(this.localPlayer.mesh, this.localPlayer.rotation, input.scrollDelta);
 
     // Update HUD
     this.updateHUD();
@@ -517,6 +513,20 @@ export class Game {
     if (diveIndicator) {
       const hawk = this.localHawk;
       diveIndicator.style.display = hawk && hawk.getIsDiving() ? 'block' : 'none';
+    }
+
+    // Flight attitude indicator — dot shows bank and pitch
+    const flightDot = document.getElementById('flight-dot');
+    if (flightDot) {
+      const isPigeon = this.localPlayer.role === PlayerRole.PIGEON;
+      const maxBank = isPigeon ? GAME_CONFIG.PIGEON_MAX_BANK_ANGLE : GAME_CONFIG.HAWK_MAX_BANK_ANGLE;
+      const maxPitch = isPigeon ? GAME_CONFIG.PIGEON_MAX_PITCH : GAME_CONFIG.HAWK_MAX_PITCH;
+      const bankPx = (this.localPlayer.rotation.z / maxBank) * 28;
+      // Screen-space convention: up on screen = negative Y.
+      // In flight convention here, negative pitch means nose down.
+      // Invert for indicator so "nose down" moves the dot downward visually.
+      const pitchPx = (-this.localPlayer.rotation.x / maxPitch) * 28;
+      flightDot.style.transform = `translate(calc(-50% + ${bankPx}px), calc(-50% + ${pitchPx}px))`;
     }
 
     // Connection status dot
@@ -718,9 +728,13 @@ export class Game {
         0
       );
 
-      // Reset rotations
+      // Reset rotations (including bank angle)
       this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
+      this.localPlayer.rotation.z = 0;
+      this.localPlayer.bankVelocity = 0;
       this.remotePlayer.rotation.y = this.gameState.isHost ? Math.PI : 0;
+      this.remotePlayer.rotation.z = 0;
+      this.remotePlayer.bankVelocity = 0;
 
       // Reset velocities
       this.localPlayer.velocity.set(0, 0, 0);
@@ -806,8 +820,8 @@ export class Game {
     if (!this.localPlayer || !this.remotePlayer) return;
 
     // Clear role-specific visual/physics leftovers before re-attaching controllers.
-    this.localPlayer.mesh.scale.setScalar(1);
-    this.remotePlayer.mesh.scale.setScalar(1);
+    this.localPlayer.setVisualScale(1);
+    this.remotePlayer.setVisualScale(1);
     this.localPlayer.speedMultiplier = 1;
     this.remotePlayer.speedMultiplier = 1;
 
@@ -992,11 +1006,7 @@ export class Game {
     }
 
     this.localPlayer.mesh.position.copy(this.localPlayer.position);
-    this.localPlayer.mesh.rotation.set(
-      this.localPlayer.rotation.x,
-      this.localPlayer.rotation.y + Math.PI / 2,
-      this.localPlayer.rotation.z
-    );
+    this.localPlayer.applyMeshRotation();
     this.lastReconcileTime = now;
   }
 
