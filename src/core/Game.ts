@@ -21,6 +21,8 @@ import { SeededRandom } from '../utils/SeededRandom';
 import { NPCType } from '../entities/NPC';
 import { NPCSpawner } from '../world/NPCSpawner';
 import { LeaderboardService } from '../services/LeaderboardService';
+import { AudioManager } from '../audio/AudioManager';
+import { SOUND_MANIFEST, SFX } from '../audio/SoundManifest';
 
 /**
  * Main game orchestrator
@@ -71,6 +73,11 @@ export class Game {
   private debugConsoleVisible: boolean = true;
   private readonly debugToggleHandler: (event: KeyboardEvent) => void;
 
+  // Audio
+  private ambientLoopId: string | null = null;
+  private windLoopId: string | null = null;
+  private wasHawkDiving: boolean = false;
+
   constructor() {
     // Get canvas
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -116,6 +123,10 @@ export class Game {
       this.applyDebugConsoleVisibility();
     };
     window.addEventListener('keydown', this.debugToggleHandler);
+
+    // Initialize audio system
+    AudioManager.init();
+    this.setupVolumeControls();
 
     // Check for room code in URL (auto-join)
     const params = new URLSearchParams(window.location.search);
@@ -288,13 +299,16 @@ export class Game {
 
     console.log('Starting game...');
 
-    // Preload 3D models
-    try {
-      await preloadModels();
-      console.log('3D models loaded');
-    } catch (err) {
-      console.warn('Failed to load 3D models, using fallback meshes:', err);
-    }
+    // Preload 3D models and sounds in parallel
+    const modelTask = preloadModels()
+      .then(() => console.log('3D models loaded'))
+      .catch((err) => console.warn('Failed to load 3D models, using fallback meshes:', err));
+
+    const soundTask = AudioManager.preload(SOUND_MANIFEST)
+      .then(() => console.log('Sounds loaded'))
+      .catch((err) => console.warn('Failed to load sounds:', err));
+
+    await Promise.all([modelTask, soundTask]);
 
     // Initialize network manager
     this.networkManager = new NetworkManager(this.peerConnection, this.gameState);
@@ -383,6 +397,8 @@ export class Game {
     if (flightIndicator) flightIndicator.style.display = 'block';
     const connStatus = document.getElementById('connection-status');
     if (connStatus) connStatus.style.display = 'flex';
+    const volumeBtn = document.getElementById('volume-btn');
+    if (volumeBtn) volumeBtn.style.display = 'flex';
     this.applyDebugConsoleVisibility();
 
     // Show instructions overlay (dismissed on click)
@@ -400,6 +416,11 @@ export class Game {
     this.gameState.startRound();
 
     this.isGameStarted = true;
+
+    // Start ambient sounds
+    this.ambientLoopId = AudioManager.playLoop(SFX.AMBIENT_CITY, 'ambient', 0.5);
+    this.windLoopId = AudioManager.playLoop(SFX.WIND_LOOP, 'ambient', 0.3);
+    AudioManager.play(SFX.ROUND_START, 'sfx');
   }
 
   /**
@@ -631,6 +652,9 @@ export class Game {
         this.endRoundPigeonSurvived();
       }
     }
+
+    // Update dive sound triggers
+    this.updateDiveSounds();
 
     // Update camera to follow local player
     this.cameraController.update(this.localPlayer.mesh, this.localPlayer.rotation, input.scrollDelta);
@@ -874,6 +898,10 @@ export class Game {
       this.networkManager.sendPlayerDeath(victimId, killerId, pigeonWeight, survivalTime);
     }
 
+    // Play hawk catch sounds
+    AudioManager.play(SFX.HAWK_SCREECH, 'sfx');
+    AudioManager.play(SFX.HAWK_WINS, 'sfx');
+
     // Show score screen
     this.scoreUI.showRoundEnd(
       'hawk',
@@ -915,6 +943,9 @@ export class Game {
       this.networkManager.sendRoundEnd('pigeon', pigeonWeight, survivalTime);
     }
 
+    // Play pigeon-wins sound
+    AudioManager.play(SFX.PIGEON_WINS, 'sfx');
+
     // Show score screen
     this.scoreUI.showRoundEnd(
       'pigeon',
@@ -949,6 +980,14 @@ export class Game {
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
+
+    // Play round-end sounds on client
+    if (winner === 'hawk') {
+      AudioManager.play(SFX.HAWK_SCREECH, 'sfx');
+      AudioManager.play(SFX.HAWK_WINS, 'sfx');
+    } else {
+      AudioManager.play(SFX.PIGEON_WINS, 'sfx');
+    }
 
     this.scoreUI.showRoundEnd(
       winner === 'pigeon' ? 'pigeon' : 'hawk',
@@ -1083,6 +1122,8 @@ export class Game {
         spawnStates
       );
     }
+
+    AudioManager.play(SFX.ROUND_START, 'sfx');
   }
 
   /**
@@ -1148,6 +1189,11 @@ export class Game {
       this.applyFoodEffect(player, food.type, food.weightGain, food.energyGain);
       this.syncFoodStateToGameState();
       networkManager.sendFoodCollected(food.id, playerId, food.exists, food.respawnTimer);
+
+      // Play eating sound (host plays for local player only; client plays via handleFoodCollected)
+      if (player === this.localPlayer) {
+        this.playEatSound(food.type);
+      }
     });
   }
 
@@ -1185,6 +1231,11 @@ export class Game {
         false,
         respawnTime
       );
+
+      // Play kill sound for local hawk
+      if (player === this.localPlayer) {
+        AudioManager.play(SFX.NPC_KILL, 'sfx');
+      }
       break;
     }
   }
@@ -1417,6 +1468,10 @@ export class Game {
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
 
+    // Play hawk catch sounds (client side)
+    AudioManager.play(SFX.HAWK_SCREECH, 'sfx');
+    AudioManager.play(SFX.HAWK_WINS, 'sfx');
+
     // Show score screen
     this.scoreUI.showRoundEnd(
       'hawk',
@@ -1449,6 +1504,11 @@ export class Game {
 
     collector.startEating(food.eatTime);
     this.applyFoodEffect(collector, food.type, food.weightGain, food.energyGain);
+
+    // Play eating sound for local player pickup
+    if (isLocalCollector) {
+      this.playEatSound(food.type);
+    }
   }
 
   /**
@@ -1463,13 +1523,19 @@ export class Game {
       npc.kill(message.respawnTimer);
     }
 
-    const collector = message.playerId === this.gameState.localPeerId ? this.localPlayer : this.remotePlayer;
+    const isLocalCollector = message.playerId === this.gameState.localPeerId;
+    const collector = isLocalCollector ? this.localPlayer : this.remotePlayer;
     if (!collector || collector.role !== PlayerRole.HAWK) return;
 
     collector.startEating(this.getNPCEatTime(message.npcType));
 
     const hawk = collector === this.localPlayer ? this.localHawk : this.remoteHawk;
     hawk?.addEnergy(this.getNPCEnergyReward(message.npcType));
+
+    // Play kill sound for local hawk
+    if (isLocalCollector) {
+      AudioManager.play(SFX.NPC_KILL, 'sfx');
+    }
   }
 
   /**
@@ -1537,6 +1603,8 @@ export class Game {
     // Start new round
     this.gameState.roundNumber = Math.max(0, message.roundNumber - 1);
     this.gameState.startRound();
+
+    AudioManager.play(SFX.ROUND_START, 'sfx');
   }
 
   /**
@@ -1561,10 +1629,74 @@ export class Game {
   }
 
   /**
+   * Wire up volume slider UI.
+   */
+  private setupVolumeControls(): void {
+    const btn = document.getElementById('volume-btn');
+    const panel = document.getElementById('volume-panel');
+
+    if (btn && panel) {
+      btn.addEventListener('click', () => {
+        panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+      });
+    }
+
+    const bind = (id: string, channel: 'master' | 'sfx' | 'ambient') => {
+      const slider = document.getElementById(id) as HTMLInputElement | null;
+      if (slider) {
+        slider.addEventListener('input', () => {
+          AudioManager.setVolume(channel, parseInt(slider.value, 10) / 100);
+        });
+      }
+    };
+
+    bind('vol-master', 'master');
+    bind('vol-sfx', 'sfx');
+    bind('vol-ambient', 'ambient');
+  }
+
+  /**
+   * Play the appropriate eating sound for a food type.
+   */
+  private playEatSound(foodType: FoodType): void {
+    switch (foodType) {
+      case FoodType.CRUMB:
+        AudioManager.play(SFX.EAT_CRUMB, 'sfx');
+        break;
+      case FoodType.BAGEL:
+        AudioManager.play(SFX.EAT_BAGEL, 'sfx');
+        break;
+      case FoodType.PIZZA:
+        AudioManager.play(SFX.EAT_PIZZA, 'sfx');
+        break;
+    }
+  }
+
+  /**
+   * Check hawk dive state transitions and play dive sound.
+   */
+  private updateDiveSounds(): void {
+    const hawk = this.localHawk;
+    if (!hawk) {
+      this.wasHawkDiving = false;
+      return;
+    }
+
+    const isDiving = hawk.getIsDiving();
+    if (isDiving && !this.wasHawkDiving) {
+      AudioManager.play(SFX.HAWK_DIVE, 'sfx', 0.8);
+    }
+    this.wasHawkDiving = isDiving;
+  }
+
+  /**
    * Cleanup
    */
   public dispose(): void {
     window.removeEventListener('keydown', this.debugToggleHandler);
+    if (this.ambientLoopId) AudioManager.stop(this.ambientLoopId);
+    if (this.windLoopId) AudioManager.stop(this.windLoopId);
+    AudioManager.dispose();
     this.sceneManager.dispose();
     this.inputManager.dispose();
     if (this.localPlayer) this.localPlayer.dispose();
