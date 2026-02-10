@@ -68,12 +68,12 @@
         content: '';
         position: absolute;
         inset: 0;
-        background: linear-gradient(
+        /* background: linear-gradient(
           180deg,
           rgba(6, 14, 22, 0.35) 0%,
           rgba(0, 0, 0, 0.58) 68%,
           rgba(0, 0, 0, 0.82) 100%
-        );
+        ); */
       }
 
       #lobby-content {
@@ -138,6 +138,75 @@
         margin: 0 auto;
       }
 
+      #username-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      #username-row label {
+        color: #cfd8dc;
+        font-size: 0.9rem;
+      }
+
+      #username-input {
+        max-width: 220px;
+        margin: 0 !important;
+        text-align: center;
+        font-size: 14px !important;
+      }
+
+      #leaderboard-panel {
+        margin: 14px auto 0;
+        width: min(100%, 560px);
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 10px 12px;
+        text-align: left;
+      }
+
+      #leaderboard-panel h3 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        color: #e5eef3;
+        text-align: center;
+      }
+
+      .leaderboard-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .leaderboard-grid h4 {
+        font-size: 12px;
+        margin-bottom: 6px;
+        color: #a7c7db;
+      }
+
+      .leaderboard-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        min-height: 80px;
+      }
+
+      .leaderboard-list li {
+        font-size: 12px;
+        color: #dbe5eb;
+        margin-bottom: 4px;
+      }
+
+      #leaderboard-status {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #9fb5c4;
+        text-align: center;
+      }
+
       @media (max-width: 640px) {
         #lobby {
           width: 92vw;
@@ -168,6 +237,14 @@
         font-weight: bold;
         letter-spacing: 4px;
         color: #4CAF50;
+        margin: 0;
+      }
+
+      .room-code-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
         margin: 12px 0;
       }
 
@@ -185,6 +262,18 @@
 
       #copy-link-btn:hover {
         background: #0b7dda !important;
+      }
+
+      #copy-code-btn {
+        background: #1565c0 !important;
+        min-width: 84px !important;
+        padding: 8px 14px !important;
+        margin: 0 !important;
+        font-size: 13px !important;
+      }
+
+      #copy-code-btn:hover {
+        background: #0d47a1 !important;
       }
 
       #hud {
@@ -388,6 +477,26 @@
         background: #44ff44;
       }
 
+      #debug-console {
+        position: absolute;
+        top: 44px;
+        right: 20px;
+        min-width: 270px;
+        max-width: 340px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(0, 0, 0, 0.5);
+        color: rgba(227, 243, 255, 0.9);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.25;
+        white-space: pre;
+        display: none;
+        pointer-events: none;
+        z-index: 6;
+      }
+
       /* Dive indicator */
       #dive-indicator {
         position: absolute;
@@ -411,7 +520,7 @@
         transform: translate(-50%, -50%);
         width: 70px;
         height: 70px;
-        border: 2px solid rgba(255, 255, 255, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 50%;
         pointer-events: none;
         display: none;
@@ -420,14 +529,14 @@
 
       #flight-dot {
         position: absolute;
-        width: 10px;
-        height: 10px;
-        background: rgba(255, 255, 255, 0.7);
+        width: 4px;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.6);
         border-radius: 50%;
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        box-shadow: 0 0 4px rgba(255, 255, 255, 0.4);
+        box-shadow: 0 0 2px rgba(255, 255, 255, 0.25);
         transition: none;
       }
 
@@ -455,7 +564,7 @@
         transform: translateY(-50%);
       }
     </style>
-    <script type="module" crossorigin src="/Birdgame/assets/index-BQOAUH4h.js"></script>
+    <script type="module" crossorigin src="/Birdgame/assets/index-CV_2pDXw.js"></script>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
@@ -468,13 +577,35 @@
           <div id="lobby-band">
             <p class="subtitle">Web-based 3D chase game</p>
             <div id="lobby-menu">
+              <div id="username-row">
+                <label for="username-input">Name</label>
+                <input type="text" id="username-input" maxlength="20" placeholder="arcade name" />
+              </div>
               <button id="host-btn">Host Game</button>
               <button id="join-btn">Join Game</button>
+
+              <div id="leaderboard-panel">
+                <h3>Leaderboard</h3>
+                <div class="leaderboard-grid">
+                  <div>
+                    <h4>Fattest Pigeon</h4>
+                    <ol id="leaderboard-fat" class="leaderboard-list"></ol>
+                  </div>
+                  <div>
+                    <h4>Quickest Hawk Kill</h4>
+                    <ol id="leaderboard-kill" class="leaderboard-list"></ol>
+                  </div>
+                </div>
+                <div id="leaderboard-status">Leaderboard unavailable</div>
+              </div>
             </div>
 
             <div id="host-screen" class="hidden">
               <p>Share this link with your friend:</p>
-              <div id="room-code"></div>
+              <div class="room-code-row">
+                <div id="room-code"></div>
+                <button id="copy-code-btn">Copy Code</button>
+              </div>
               <input type="text" id="room-link" readonly />
               <button id="copy-link-btn">Copy Link</button>
               <input type="hidden" id="peer-id-display" />
@@ -522,6 +653,7 @@
           <div><span>Space</span> Fly up</div>
           <div><span>Shift</span> Fly down</div>
           <div><span>Mouse Y</span> Pitch up / down</div>
+          <div><span>↑ / ↓</span> Pitch up / down</div>
           <div><span>Scroll</span> Zoom camera</div>
         </div>
         <p style="margin-top: 1rem; font-size: 1rem; color: #ccc;">
@@ -542,6 +674,9 @@
       <div id="connection-status">
         <span id="connection-dot"></span>
       </div>
+
+      <!-- Debug Console -->
+      <div id="debug-console"></div>
 
       <!-- Dive Indicator -->
       <div id="dive-indicator">DIVING</div>
