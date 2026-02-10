@@ -14,6 +14,10 @@ export class LobbyUI {
   private backBtn: HTMLButtonElement;
   private peerIdDisplay: HTMLInputElement;
   private peerIdInput: HTMLInputElement;
+  private usernameInput: HTMLInputElement;
+  private leaderboardFat: HTMLOListElement;
+  private leaderboardKill: HTMLOListElement;
+  private leaderboardStatus: HTMLElement;
 
   private onHostCallback: (() => void) | null = null;
   private onJoinCallback: ((peerId: string) => void) | null = null;
@@ -31,8 +35,13 @@ export class LobbyUI {
     this.backBtn = document.getElementById('back-btn') as HTMLButtonElement;
     this.peerIdDisplay = document.getElementById('peer-id-display') as HTMLInputElement;
     this.peerIdInput = document.getElementById('peer-id-input') as HTMLInputElement;
+    this.usernameInput = document.getElementById('username-input') as HTMLInputElement;
+    this.leaderboardFat = document.getElementById('leaderboard-fat') as HTMLOListElement;
+    this.leaderboardKill = document.getElementById('leaderboard-kill') as HTMLOListElement;
+    this.leaderboardStatus = document.getElementById('leaderboard-status') as HTMLElement;
 
     this.setupEventListeners();
+    this.restoreUsername();
   }
 
   private setupEventListeners(): void {
@@ -82,6 +91,33 @@ export class LobbyUI {
         }
       });
     }
+
+    // Copy room code button
+    const copyCodeBtn = document.getElementById('copy-code-btn');
+    if (copyCodeBtn) {
+      copyCodeBtn.addEventListener('click', () => {
+        const codeEl = document.getElementById('room-code');
+        const code = codeEl?.textContent?.trim() ?? '';
+        if (!code) return;
+        navigator.clipboard.writeText(code).then(() => {
+          copyCodeBtn.textContent = 'Copied!';
+          setTimeout(() => { copyCodeBtn.textContent = 'Copy Code'; }, 2000);
+        });
+      });
+    }
+
+    this.usernameInput.addEventListener('input', () => {
+      localStorage.setItem('birdgame_username', this.getUsername());
+    });
+  }
+
+  private restoreUsername(): void {
+    const saved = localStorage.getItem('birdgame_username');
+    if (saved) {
+      this.usernameInput.value = saved;
+      return;
+    }
+    this.usernameInput.value = `bird-${Math.floor(Math.random() * 900 + 100)}`;
   }
 
   private resetJoinControls(): void {
@@ -205,5 +241,36 @@ export class LobbyUI {
    */
   public onJoin(callback: (peerId: string) => void): void {
     this.onJoinCallback = callback;
+  }
+
+  public getUsername(): string {
+    return this.usernameInput.value.trim();
+  }
+
+  public setLeaderboardStatus(text: string): void {
+    this.leaderboardStatus.textContent = text;
+  }
+
+  public renderLeaderboard(
+    fattest: Array<{ username: string; value: number }>,
+    fastest: Array<{ username: string; value: number }>
+  ): void {
+    this.leaderboardFat.innerHTML = fattest.length
+      ? fattest
+          .map((row, idx) => `<li>${idx + 1}. ${row.username} - ${row.value.toFixed(1)}</li>`)
+          .join('')
+      : '<li>No entries yet</li>';
+
+    this.leaderboardKill.innerHTML = fastest.length
+      ? fastest
+          .map((row, idx) => `<li>${idx + 1}. ${row.username} - ${this.formatSeconds(row.value)}</li>`)
+          .join('')
+      : '<li>No entries yet</li>';
+  }
+
+  private formatSeconds(totalSeconds: number): string {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   }
 }

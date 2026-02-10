@@ -568,7 +568,7 @@ public/models/
 
 ### Session C Progress (Feb 8, 2026 - Codex)
 
-**Status:** In progress (model infrastructure expanded + gameplay integration pass complete)
+**Status:** Complete for current gameplay pass (future polish/model drops still open)
 
 **Completed this pass:**
 - Expanded model-loading infrastructure in `src/utils/ModelLoader.ts`:
@@ -592,6 +592,7 @@ public/models/
   - rooftop bagels and pizza as high-value/high-risk pickups
   - minimal rooftop crumbs
   - supports "reward for flying higher" loop
+- User playtest sign-off: NPC pigeons, squirrels, and rooftop food are considered complete for now.
 
 **Validation:**
 - Type checks pass (`npx tsc --noEmit`).
@@ -614,6 +615,27 @@ public/models/
 **Validation:**
 - Re-tested role swap across rounds in two windows; local pigeon model now renders correctly after swap.
 - Type checks pass (`npx tsc --noEmit`).
+
+---
+
+### Session C + Leaderboard Update (Feb 8, 2026 - Codex)
+
+**Completed:**
+- Added anonymous, no-account leaderboard integration (Supabase REST + anon key):
+  - `fattest_pigeon` (highest value)
+  - `fastest_hawk_kill` (lowest time)
+- Added lobby username input (free-form arcade name, stored locally).
+- Added lobby leaderboard panel with top results for both metrics.
+- Submission behavior:
+  - each client submits only its own local role result at round end
+  - host/client duplication avoided without requiring account identity
+- Added host-screen inline `Copy Code` button.
+- Added arrow-key pitch support (`ArrowUp/ArrowDown`) in addition to mouse pitch.
+- Reduced reticle visual prominence (thinner/lower-contrast indicator).
+
+**Docs:**
+- Added `.env.example` for Supabase client config.
+- Added README section with one-time SQL table/RLS setup and key-safety notes.
 
 ---
 
@@ -642,7 +664,7 @@ Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon
 1. ~~Camera can clip through buildings~~ — FIXED (Phase 2)
 2. No audio (future)
 3. ~~Simple bird models~~ — GLB models integrated (Feb 8, 2026)
-4. No AI prey — Phase 3 (see above)
+4. ~~No AI prey~~ - basic AI prey is implemented (advanced behavior/model polish pending)
 5. ~~Limited map (2x2 blocks)~~ — Phase 3 expansion to 10x10 grid (see above)
 6. ~~No dive attack for hawk~~ — FIXED (Phase 2)
 7. No leaderboard (future)

@@ -10,6 +10,7 @@ export class FlightController {
   private static _pitchQ = new THREE.Quaternion();
   private static _attitudeQ = new THREE.Quaternion();
   private static _rightAxis = new THREE.Vector3();
+  private wasAscending = new WeakMap<Player, boolean>();
 
   /**
    * Apply player input to control flight using a banking model.
@@ -19,6 +20,7 @@ export class FlightController {
   public applyInput(player: Player, input: InputState, deltaTime: number): void {
     // Don't allow movement while eating
     if (player.isEating) {
+      this.wasAscending.set(player, false);
       return;
     }
 
@@ -106,6 +108,15 @@ export class FlightController {
     }
 
     // Ascend/descend
+    const ascendingNow = input.ascend > 0;
+    const wasAscending = this.wasAscending.get(player) ?? false;
+    if (ascendingNow && !wasAscending) {
+      console.log(
+        `[flight] ascend start role=${player.role} y=${player.position.y.toFixed(2)} vy=${player.velocity.y.toFixed(2)}`
+      );
+    }
+    this.wasAscending.set(player, ascendingNow);
+
     if (input.ascend !== 0) {
       player.velocity.addScaledVector(FlightController._up, input.ascend * speed * deltaTime * 10);
     }

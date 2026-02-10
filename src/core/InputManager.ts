@@ -44,6 +44,13 @@ export class InputManager {
   }
 
   private onKeyDown(event: KeyboardEvent): void {
+    if (
+      event.code === 'ArrowUp' ||
+      event.code === 'ArrowDown' ||
+      event.code === 'Space'
+    ) {
+      event.preventDefault();
+    }
     this.keys.add(event.code);
   }
 
@@ -96,6 +103,12 @@ export class InputManager {
     // Ascend/descend (Space/Shift)
     if (this.keys.has('Space')) input.ascend += 1;
     if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) input.ascend -= 1;
+
+    // Arrow-key pitch support (mapped to mouse-Y deltas).
+    // ArrowUp behaves like moving mouse up; ArrowDown like moving mouse down.
+    const keyboardPitchDelta = 10;
+    if (this.keys.has('ArrowUp')) input.mouseY -= keyboardPitchDelta;
+    if (this.keys.has('ArrowDown')) input.mouseY += keyboardPitchDelta;
 
     // Reset deltas after reading
     this.mouseDelta.x = 0;

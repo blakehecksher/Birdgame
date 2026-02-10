@@ -20,6 +20,7 @@ import { preloadModels, getModel } from '../utils/ModelLoader';
 import { SeededRandom } from '../utils/SeededRandom';
 import { NPCType } from '../entities/NPC';
 import { NPCSpawner } from '../world/NPCSpawner';
+import { LeaderboardService } from '../services/LeaderboardService';
 
 /**
  * Main game orchestrator
@@ -44,6 +45,7 @@ export class Game {
   // UI
   private lobbyUI: LobbyUI;
   private scoreUI: ScoreUI;
+  private leaderboard: LeaderboardService;
 
   // Players
   private localPlayer: Player | null = null;
@@ -64,6 +66,10 @@ export class Game {
   private isGameStarted: boolean = false;
   private lastReconcileTime: number = 0;
   private worldSeed: number = 1;
+  private debugConsoleEl: HTMLElement | null = null;
+  private lastDebugRefreshTime: number = 0;
+  private debugConsoleVisible: boolean = true;
+  private readonly debugToggleHandler: (event: KeyboardEvent) => void;
 
   constructor() {
     // Get canvas
@@ -84,7 +90,9 @@ export class Game {
     // Initialize UI
     this.lobbyUI = new LobbyUI();
     this.scoreUI = new ScoreUI();
+    this.leaderboard = new LeaderboardService();
     this.lobbyUI.show();
+    this.refreshLeaderboard();
 
     // Set up lobby callbacks
     this.lobbyUI.onHost(() => this.hostGame());
@@ -100,6 +108,14 @@ export class Game {
         window.location.reload();
       });
     }
+    this.debugConsoleEl = document.getElementById('debug-console');
+    this.debugToggleHandler = (event: KeyboardEvent) => {
+      if (event.code !== 'F3') return;
+      event.preventDefault();
+      this.debugConsoleVisible = !this.debugConsoleVisible;
+      this.applyDebugConsoleVisibility();
+    };
+    window.addEventListener('keydown', this.debugToggleHandler);
 
     // Check for room code in URL (auto-join)
     const params = new URLSearchParams(window.location.search);
@@ -367,6 +383,7 @@ export class Game {
     if (flightIndicator) flightIndicator.style.display = 'block';
     const connStatus = document.getElementById('connection-status');
     if (connStatus) connStatus.style.display = 'flex';
+    this.applyDebugConsoleVisibility();
 
     // Show instructions overlay (dismissed on click)
     const instructions = document.getElementById('instructions');
@@ -406,6 +423,65 @@ export class Game {
     // Always render
     this.sceneManager.render();
   };
+
+  private async refreshLeaderboard(): Promise<void> {
+    if (!this.leaderboard.isConfigured()) {
+      this.lobbyUI.setLeaderboardStatus('Set Supabase env vars to enable leaderboard');
+      this.lobbyUI.renderLeaderboard([], []);
+      return;
+    }
+
+    this.lobbyUI.setLeaderboardStatus('Loading...');
+    try {
+      const [fattest, fastest] = await Promise.all([
+        this.leaderboard.fetchTop('fattest_pigeon', 10),
+        this.leaderboard.fetchTop('fastest_hawk_kill', 10),
+      ]);
+      this.lobbyUI.renderLeaderboard(fattest, fastest);
+      this.lobbyUI.setLeaderboardStatus('Live board');
+    } catch (error) {
+      console.warn('Leaderboard load failed:', error);
+      this.lobbyUI.setLeaderboardStatus('Leaderboard unavailable');
+      this.lobbyUI.renderLeaderboard([], []);
+    }
+  }
+
+  private submitLocalLeaderboardResult(
+    winner: 'pigeon' | 'hawk',
+    pigeonWeight: number,
+    survivalTime: number
+  ): void {
+    if (!this.localPlayer || !this.gameState || !this.leaderboard.isConfigured()) return;
+
+    const username = this.lobbyUI.getUsername();
+    const tasks: Promise<void>[] = [];
+
+    if (this.localPlayer.role === PlayerRole.PIGEON) {
+      tasks.push(this.leaderboard.submit({
+        username,
+        metric: 'fattest_pigeon',
+        value: pigeonWeight,
+        match_id: this.gameState.matchId,
+        round_number: this.gameState.roundNumber,
+      }));
+    }
+
+    if (winner === 'hawk' && this.localPlayer.role === PlayerRole.HAWK) {
+      tasks.push(this.leaderboard.submit({
+        username,
+        metric: 'fastest_hawk_kill',
+        value: survivalTime,
+        match_id: this.gameState.matchId,
+        round_number: this.gameState.roundNumber,
+      }));
+    }
+
+    if (tasks.length === 0) return;
+
+    Promise.all(tasks)
+      .then(() => this.refreshLeaderboard())
+      .catch((error) => console.warn('Leaderboard submit failed:', error));
+  }
 
   /**
    * Update game state
@@ -646,6 +722,87 @@ export class Game {
         connectionDot.style.background = '#ff4444';
       }
     }
+
+    this.updateDebugConsole();
+  }
+
+  private updateDebugConsole(): void {
+    if (!this.debugConsoleEl) return;
+    if (!this.gameState || !this.localPlayer) {
+      this.debugConsoleEl.textContent = '';
+      return;
+    }
+
+    const now = performance.now();
+    if (now - this.lastDebugRefreshTime < 100) return;
+    this.lastDebugRefreshTime = now;
+
+    const localState = this.gameState.getLocalPlayer();
+    const remoteState = this.gameState.getRemotePlayer();
+    const localError = localState
+      ? localState.position.distanceTo(this.localPlayer.position)
+      : 0;
+    const remoteError = this.remotePlayer && remoteState
+      ? remoteState.position.distanceTo(this.remotePlayer.position)
+      : 0;
+
+    let foodMismatch = 0;
+    let missingLocalFood = 0;
+    let orphanLocalFood = 0;
+    if (this.foodSpawner) {
+      const localFoods = this.foodSpawner.getFoods();
+      const localFoodMap = new Map(localFoods.map((food) => [food.id, food]));
+      for (const [id, foodState] of this.gameState.foods) {
+        const localFood = localFoodMap.get(id);
+        if (!localFood) {
+          missingLocalFood += 1;
+          continue;
+        }
+        const stateRespawnTimer = foodState.respawnTimer ?? 0;
+        if (
+          localFood.exists !== foodState.exists ||
+          Math.abs(localFood.respawnTimer - stateRespawnTimer) > 0.25
+        ) {
+          foodMismatch += 1;
+        }
+      }
+      for (const localFood of localFoods) {
+        if (!this.gameState.foods.has(localFood.id)) {
+          orphanLocalFood += 1;
+        }
+      }
+    }
+
+    const connectionState = this.peerConnection?.isConnected()
+      ? 'connected'
+      : this.peerConnection?.getIsReconnecting()
+        ? 'reconnecting'
+        : 'disconnected';
+
+    const lines: string[] = [
+      `DEBUG (${this.gameState.isHost ? 'HOST' : 'CLIENT'})`,
+      `Conn: ${connectionState}`,
+      `Round: ${this.gameState.roundNumber} ${this.gameState.roundState}`,
+      `Local ${this.localPlayer.role} p:${this.formatVec3(this.localPlayer.position)} v:${this.localPlayer.velocity.length().toFixed(2)}`,
+      this.remotePlayer
+        ? `Remote ${this.remotePlayer.role} p:${this.formatVec3(this.remotePlayer.position)} v:${this.remotePlayer.velocity.length().toFixed(2)}`
+        : 'Remote: n/a',
+      `PosErr L:${localError.toFixed(2)} R:${remoteError.toFixed(2)}`,
+      `Food local:${this.foodSpawner?.getFoods().length ?? 0} state:${this.gameState.foods.size}`,
+      `Food mismatch:${foodMismatch} missing:${missingLocalFood} orphan:${orphanLocalFood}`,
+      `NPC local:${this.npcSpawner?.getNPCs().length ?? 0} state:${this.gameState.npcs.size}`,
+    ];
+
+    this.debugConsoleEl.textContent = lines.join('\n');
+  }
+
+  private applyDebugConsoleVisibility(): void {
+    if (!this.debugConsoleEl) return;
+    this.debugConsoleEl.style.display = this.isGameStarted && this.debugConsoleVisible ? 'block' : 'none';
+  }
+
+  private formatVec3(value: THREE.Vector3): string {
+    return `${value.x.toFixed(1)},${value.y.toFixed(1)},${value.z.toFixed(1)}`;
   }
 
   /**
@@ -725,6 +882,7 @@ export class Game {
       this.gameState.scores.pigeon,
       this.gameState.scores.hawk
     );
+    this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
     // Release pointer lock
     this.inputManager.releasePointerLock();
@@ -765,6 +923,7 @@ export class Game {
       this.gameState.scores.pigeon,
       this.gameState.scores.hawk
     );
+    this.submitLocalLeaderboardResult('pigeon', pigeonWeight, survivalTime);
 
     this.inputManager.releasePointerLock();
   }
@@ -798,6 +957,7 @@ export class Game {
       this.gameState.scores.pigeon,
       this.gameState.scores.hawk
     );
+    this.submitLocalLeaderboardResult(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
 
     this.inputManager.releasePointerLock();
   }
@@ -1265,6 +1425,7 @@ export class Game {
       this.gameState.scores.pigeon,
       this.gameState.scores.hawk
     );
+    this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
     // Release pointer lock
     this.inputManager.releasePointerLock();
@@ -1403,6 +1564,7 @@ export class Game {
    * Cleanup
    */
   public dispose(): void {
+    window.removeEventListener('keydown', this.debugToggleHandler);
     this.sceneManager.dispose();
     this.inputManager.dispose();
     if (this.localPlayer) this.localPlayer.dispose();
