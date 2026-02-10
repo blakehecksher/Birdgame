@@ -6,20 +6,17 @@ import { NetworkMessage } from './messages';
  */
 export class PeerConnection {
   private peer: Peer | null = null;
-  private connection: DataConnection | null = null;
+  private connections: Map<string, DataConnection> = new Map();
   private isHost: boolean = false;
   private storedHostPeerId: string | null = null;
-  private onMessageCallback: ((message: NetworkMessage) => void) | null = null;
+  private onMessageCallback: ((message: NetworkMessage, peerId: string) => void) | null = null;
   private onConnectedCallback: ((peerId: string) => void) | null = null;
-  private onDisconnectedCallback: (() => void) | null = null;
+  private onDisconnectedCallback: ((peerId?: string) => void) | null = null;
   private onReconnectedCallback: (() => void) | null = null;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
   private isReconnecting: boolean = false;
 
-  /**
-   * Initialize as host with optional custom peer ID
-   */
   public async initializeAsHost(roomCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
@@ -34,8 +31,8 @@ export class PeerConnection {
 
         this.peer.on('connection', (conn) => {
           console.log('Client connected:', conn.peer);
-          this.connection = conn;
-          this.setupConnectionHandlers();
+          this.connections.set(conn.peer, conn);
+          this.setupConnectionHandlers(conn);
 
           if (this.isReconnecting) {
             this.isReconnecting = false;
@@ -43,7 +40,9 @@ export class PeerConnection {
             if (this.onReconnectedCallback) {
               this.onReconnectedCallback();
             }
-          } else if (this.onConnectedCallback) {
+          }
+
+          if (this.onConnectedCallback) {
             this.onConnectedCallback(conn.peer);
           }
         });
@@ -58,9 +57,6 @@ export class PeerConnection {
     });
   }
 
-  /**
-   * Initialize as client and connect to host
-   */
   public async initializeAsClient(hostPeerId: string): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
@@ -71,11 +67,9 @@ export class PeerConnection {
         this.peer.on('open', (id) => {
           console.log('Client peer ID:', id);
 
-          this.connection = this.peer!.connect(hostPeerId, {
-            reliable: true,
-          });
-
-          this.setupConnectionHandlers();
+          const connection = this.peer!.connect(hostPeerId, { reliable: true });
+          this.connections.set(hostPeerId, connection);
+          this.setupConnectionHandlers(connection);
           resolve(id);
         });
 
@@ -89,60 +83,49 @@ export class PeerConnection {
     });
   }
 
-  /**
-   * Set up connection event handlers
-   */
-  private setupConnectionHandlers(): void {
-    if (!this.connection) return;
-
-    this.connection.on('open', () => {
-      console.log('Connection opened');
+  private setupConnectionHandlers(connection: DataConnection): void {
+    connection.on('open', () => {
+      console.log('Connection opened:', connection.peer);
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
 
-      if (this.isReconnecting && this.onReconnectedCallback) {
-        this.onReconnectedCallback();
-      } else if (!this.isHost && this.onConnectedCallback) {
-        this.onConnectedCallback(this.connection!.peer);
+      if (!this.isHost && this.onConnectedCallback) {
+        this.onConnectedCallback(connection.peer);
       }
     });
 
-    this.connection.on('data', (data) => {
+    connection.on('data', (data) => {
       if (this.onMessageCallback) {
-        this.onMessageCallback(data as NetworkMessage);
+        this.onMessageCallback(data as NetworkMessage, connection.peer);
       }
     });
 
-    this.connection.on('close', () => {
-      console.log('Connection closed');
-      this.attemptReconnect();
+    connection.on('close', () => {
+      console.log('Connection closed:', connection.peer);
+      this.connections.delete(connection.peer);
+      this.attemptReconnect(connection.peer);
     });
 
-    this.connection.on('error', (error) => {
+    connection.on('error', (error) => {
       console.error('Connection error:', error);
     });
   }
 
-  /**
-   * Attempt to reconnect after disconnect
-   */
-  private attemptReconnect(): void {
+  private attemptReconnect(peerId?: string): void {
     if (this.isHost) {
-      // Host waits for client to reconnect
       console.log('Client disconnected. Waiting for reconnection...');
       this.isReconnecting = true;
       if (this.onDisconnectedCallback) {
-        this.onDisconnectedCallback();
+        this.onDisconnectedCallback(peerId);
       }
       return;
     }
 
-    // Client tries to reconnect to host
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.log('Max reconnect attempts reached');
       this.isReconnecting = false;
       if (this.onDisconnectedCallback) {
-        this.onDisconnectedCallback();
+        this.onDisconnectedCallback(peerId);
       }
       return;
     }
@@ -153,37 +136,31 @@ export class PeerConnection {
 
     setTimeout(() => {
       if (!this.peer || this.peer.destroyed) {
-        // Need a fresh peer
         this.peer = new Peer();
-        this.peer.on('open', () => {
-          this.connectToHost();
-        });
+        this.peer.on('open', () => this.connectToHost());
         this.peer.on('error', (error) => {
           console.error('Reconnect peer error:', error);
-          this.attemptReconnect();
+          this.attemptReconnect(peerId);
         });
       } else if (this.peer.disconnected) {
         this.peer.reconnect();
-        this.peer.on('open', () => {
-          this.connectToHost();
-        });
+        this.peer.on('open', () => this.connectToHost());
       } else {
         this.connectToHost();
       }
     }, 2000);
   }
 
-  /**
-   * Connect to stored host peer ID
-   */
   private connectToHost(): void {
     if (!this.peer || !this.storedHostPeerId) return;
 
-    this.connection = this.peer.connect(this.storedHostPeerId, {
+    const connection = this.peer.connect(this.storedHostPeerId, {
       reliable: true,
     });
 
-    this.connection.on('open', () => {
+    this.connections.set(this.storedHostPeerId, connection);
+
+    connection.on('open', () => {
       console.log('Reconnected to host');
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
@@ -192,105 +169,89 @@ export class PeerConnection {
       }
     });
 
-    this.connection.on('data', (data) => {
+    connection.on('data', (data) => {
       if (this.onMessageCallback) {
-        this.onMessageCallback(data as NetworkMessage);
+        this.onMessageCallback(data as NetworkMessage, connection.peer);
       }
     });
 
-    this.connection.on('close', () => {
+    connection.on('close', () => {
       console.log('Reconnected connection closed');
-      this.attemptReconnect();
+      this.connections.delete(connection.peer);
+      this.attemptReconnect(connection.peer);
     });
 
-    this.connection.on('error', (error) => {
+    connection.on('error', (error) => {
       console.error('Reconnect connection error:', error);
-      this.attemptReconnect();
+      this.attemptReconnect(connection.peer);
     });
   }
 
-  /**
-   * Send message to connected peer
-   */
-  public send(message: NetworkMessage): void {
-    if (this.connection && this.connection.open) {
-      this.connection.send(message);
+  public send(message: NetworkMessage, peerId?: string): void {
+    if (peerId) {
+      const conn = this.connections.get(peerId);
+      if (conn?.open) conn.send(message);
+      return;
     }
+
+    this.connections.forEach((conn) => {
+      if (conn.open) {
+        conn.send(message);
+      }
+    });
   }
 
-  /**
-   * Register callback for incoming messages
-   */
-  public onMessage(callback: (message: NetworkMessage) => void): void {
+  public onMessage(callback: (message: NetworkMessage, peerId: string) => void): void {
     this.onMessageCallback = callback;
   }
 
-  /**
-   * Register callback for connection established
-   */
   public onConnected(callback: (peerId: string) => void): void {
     this.onConnectedCallback = callback;
   }
 
-  /**
-   * Register callback for disconnection
-   */
-  public onDisconnected(callback: () => void): void {
+  public onDisconnected(callback: (peerId?: string) => void): void {
     this.onDisconnectedCallback = callback;
   }
 
-  /**
-   * Register callback for successful reconnection
-   */
   public onReconnected(callback: () => void): void {
     this.onReconnectedCallback = callback;
   }
 
-  /**
-   * Check if connected to peer
-   */
   public isConnected(): boolean {
-    return this.connection !== null && this.connection.open;
+    for (const conn of this.connections.values()) {
+      if (conn.open) return true;
+    }
+    return false;
   }
 
-  /**
-   * Check if currently attempting to reconnect
-   */
   public getIsReconnecting(): boolean {
     return this.isReconnecting;
   }
 
-  /**
-   * Get local peer ID
-   */
   public getPeerId(): string | null {
     return this.peer?.id || null;
   }
 
-  /**
-   * Get remote peer ID
-   */
   public getRemotePeerId(): string | null {
-    return this.connection?.peer || null;
+    for (const [peerId, conn] of this.connections.entries()) {
+      if (conn.open) return peerId;
+    }
+    return null;
   }
 
-  /**
-   * Check if this peer is the host
-   */
+  public getRemotePeerIds(): string[] {
+    return Array.from(this.connections.keys());
+  }
+
   public isHostPeer(): boolean {
     return this.isHost;
   }
 
-  /**
-   * Disconnect and clean up
-   */
   public disconnect(): void {
     this.isReconnecting = false;
     this.reconnectAttempts = this.maxReconnectAttempts;
-    if (this.connection) {
-      this.connection.close();
-      this.connection = null;
-    }
+    this.connections.forEach((connection) => connection.close());
+    this.connections.clear();
     if (this.peer) {
       this.peer.destroy();
       this.peer = null;

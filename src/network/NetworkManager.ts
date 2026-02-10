@@ -29,19 +29,14 @@ export class NetworkManager {
   // State buffer for interpolation (client only)
   private stateBuffer: StateSyncMessage[] = [];
 
-  // Host-side remote input cache.
+  // Host-side remote input cache per peer.
   // Axes are treated as persistent state; mouse deltas are consumed once.
-  private hasRemoteInput: boolean = false;
-  private remoteInputAxes: InputState = {
-    forward: 0,
-    strafe: 0,
-    ascend: 0,
-    mouseX: 0,
-    mouseY: 0,
-    scrollDelta: 0,
-  };
-  private pendingRemoteMouseX: number = 0;
-  private pendingRemoteMouseY: number = 0;
+  private remoteInputs: Map<string, {
+    hasInput: boolean;
+    axes: InputState;
+    pendingMouseX: number;
+    pendingMouseY: number;
+  }> = new Map();
   private pendingLocalInputAxes: InputState = {
     forward: 0,
     strafe: 0,
@@ -74,16 +69,16 @@ export class NetworkManager {
     this.tickRate = 1000 / GAME_CONFIG.TICK_RATE; // Convert Hz to ms
 
     // Register message handler
-    this.peerConnection.onMessage((message) => this.handleMessage(message));
+    this.peerConnection.onMessage((message, peerId) => this.handleMessage(message, peerId));
   }
 
   /**
    * Handle incoming network message
    */
-  private handleMessage(message: NetworkMessage): void {
+  private handleMessage(message: NetworkMessage, peerId: string): void {
     switch (message.type) {
       case MessageType.INPUT_UPDATE:
-        this.handleInputUpdate(message as InputUpdateMessage);
+        this.handleInputUpdate(message as InputUpdateMessage, peerId);
         break;
 
       case MessageType.STATE_SYNC:
@@ -118,18 +113,23 @@ export class NetworkManager {
   /**
    * Handle input update from client (host only)
    */
-  private handleInputUpdate(message: InputUpdateMessage): void {
+  private handleInputUpdate(message: InputUpdateMessage, peerId: string): void {
     if (!this.gameState.isHost) return;
 
-    // Movement axes are continuous state.
-    this.remoteInputAxes.forward = message.input.forward;
-    this.remoteInputAxes.strafe = message.input.strafe;
-    this.remoteInputAxes.ascend = message.input.ascend;
+    const existing = this.remoteInputs.get(peerId) ?? {
+      hasInput: false,
+      axes: { forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0, scrollDelta: 0 },
+      pendingMouseX: 0,
+      pendingMouseY: 0,
+    };
 
-    // Mouse is per-frame delta; accumulate and consume once in getRemoteInput().
-    this.pendingRemoteMouseX += message.input.mouseX;
-    this.pendingRemoteMouseY += message.input.mouseY;
-    this.hasRemoteInput = true;
+    existing.axes.forward = message.input.forward;
+    existing.axes.strafe = message.input.strafe;
+    existing.axes.ascend = message.input.ascend;
+    existing.pendingMouseX += message.input.mouseX;
+    existing.pendingMouseY += message.input.mouseY;
+    existing.hasInput = true;
+    this.remoteInputs.set(peerId, existing);
   }
 
   /**
@@ -159,7 +159,10 @@ export class NetworkManager {
     // Update players
     for (const peerId in message.players) {
       const playerData = message.players[peerId];
-      const player = this.gameState.players.get(peerId);
+      let player = this.gameState.players.get(peerId);
+      if (!player) {
+        player = this.gameState.addPlayer(peerId, playerData.role);
+      }
 
       if (player) {
         // Don't update local player position from network (we control it locally)
@@ -329,22 +332,23 @@ export class NetworkManager {
   /**
    * Get remote player's input (for host to apply to remote player)
    */
-  public getRemoteInput(): InputState | null {
+  public getRemoteInput(peerId: string): InputState | null {
     if (!this.gameState.isHost) return null;
-    if (!this.hasRemoteInput) return null;
+    const entry = this.remoteInputs.get(peerId);
+    if (!entry || !entry.hasInput) return null;
 
     const input: InputState = {
-      forward: this.remoteInputAxes.forward,
-      strafe: this.remoteInputAxes.strafe,
-      ascend: this.remoteInputAxes.ascend,
-      mouseX: this.pendingRemoteMouseX,
-      mouseY: this.pendingRemoteMouseY,
-      scrollDelta: 0, // Scroll is local-only (camera zoom), not synced
+      forward: entry.axes.forward,
+      strafe: entry.axes.strafe,
+      ascend: entry.axes.ascend,
+      mouseX: entry.pendingMouseX,
+      mouseY: entry.pendingMouseY,
+      scrollDelta: 0,
     };
 
-    // Consume mouse deltas so they are applied only once.
-    this.pendingRemoteMouseX = 0;
-    this.pendingRemoteMouseY = 0;
+    entry.pendingMouseX = 0;
+    entry.pendingMouseY = 0;
+    this.remoteInputs.set(peerId, entry);
 
     return input;
   }
@@ -353,14 +357,7 @@ export class NetworkManager {
    * Clear cached remote input (useful on round transitions).
    */
   public resetRemoteInput(): void {
-    this.hasRemoteInput = false;
-    this.remoteInputAxes.forward = 0;
-    this.remoteInputAxes.strafe = 0;
-    this.remoteInputAxes.ascend = 0;
-    this.remoteInputAxes.mouseX = 0;
-    this.remoteInputAxes.mouseY = 0;
-    this.pendingRemoteMouseX = 0;
-    this.pendingRemoteMouseY = 0;
+    this.remoteInputs.clear();
     this.pendingLocalInputAxes.forward = 0;
     this.pendingLocalInputAxes.strafe = 0;
     this.pendingLocalInputAxes.ascend = 0;

@@ -77,6 +77,7 @@ export class Game {
   private ambientLoopId: string | null = null;
   private windLoopId: string | null = null;
   private wasHawkDiving: boolean = false;
+  private nextPigeonPeerId: string | null = null;
 
   constructor() {
     // Get canvas
@@ -234,8 +235,13 @@ export class Game {
       // Set up connection callbacks
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
-        this.gameState!.remotePeerId = remotePeerId;
-        this.startGame();
+        if (!this.gameState) return;
+        if (!this.gameState.remotePeerId) {
+          this.gameState.remotePeerId = remotePeerId;
+        }
+        if (!this.isGameStarted) {
+          this.startGame();
+        }
       });
 
       this.setupDisconnectHandlers();
@@ -577,7 +583,7 @@ export class Game {
       if (this.gameState.isHost) {
         // Host: Apply remote player input if available
         if (this.remotePlayer) {
-          const remoteInput = this.networkManager.getRemoteInput();
+          const remoteInput = this.networkManager.getRemoteInput(this.gameState.remotePeerId!);
           if (remoteInput) {
             this.flightController.applyInput(this.remotePlayer, remoteInput, deltaTime);
           }
@@ -882,6 +888,10 @@ export class Game {
     this.gameState.scores.hawk.killTimes.push(survivalTime);
 
     // End the round
+    const survivingPigeon = this.localPlayer!.role === PlayerRole.PIGEON
+      ? this.gameState.localPeerId
+      : this.gameState.remotePeerId;
+    this.nextPigeonPeerId = survivingPigeon ?? this.gameState.localPeerId;
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
@@ -894,6 +904,7 @@ export class Game {
       const killerId = pigeonPlayer === this.localPlayer
         ? this.gameState.remotePeerId!
         : this.gameState.localPeerId;
+      this.nextPigeonPeerId = killerId;
 
       this.networkManager.sendPlayerDeath(victimId, killerId, pigeonWeight, survivalTime);
     }
@@ -934,6 +945,9 @@ export class Game {
     this.gameState.scores.pigeon.roundsWon += 1;
 
     // End the round
+    this.nextPigeonPeerId = this.localPlayer!.role === PlayerRole.PIGEON
+      ? this.gameState.localPeerId
+      : (this.gameState.remotePeerId ?? this.gameState.localPeerId);
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
@@ -1015,8 +1029,14 @@ export class Game {
       return;
     }
 
-    // Swap roles
-    this.gameState.swapRoles();
+    // Choose next pigeon: killing hawk becomes pigeon, otherwise keep prior pigeon.
+    let nextPigeonPeerId = this.nextPigeonPeerId;
+    if (!nextPigeonPeerId) {
+      const currentPigeon = Array.from(this.gameState.players.values()).find((p) => p.role === PlayerRole.PIGEON);
+      nextPigeonPeerId = currentPigeon?.peerId ?? this.gameState.localPeerId;
+    }
+    this.gameState.assignRolesForNextRound(nextPigeonPeerId);
+    this.nextPigeonPeerId = null;
 
     // Update player roles
     const localPlayerState = this.gameState.getLocalPlayer();
