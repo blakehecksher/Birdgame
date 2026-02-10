@@ -110,8 +110,10 @@ export class GameState {
     return this.players.get(this.localPeerId);
   }
 
+
+
   /**
-   * Get remote player state
+   * Get remote player state (legacy first-remote accessor).
    */
   public getRemotePlayer(): PlayerState | undefined {
     if (!this.remotePeerId) return undefined;
@@ -163,11 +165,11 @@ export class GameState {
   }
 
   /**
-   * Swap player roles for next round
+   * Assign one pigeon and make everyone else hawks for next round.
    */
-  public swapRoles(): void {
-    this.players.forEach((player) => {
-      player.role = player.role === PlayerRole.PIGEON ? PlayerRole.HAWK : PlayerRole.PIGEON;
+  public assignRolesForNextRound(nextPigeonPeerId: string): void {
+    this.players.forEach((player, peerId) => {
+      player.role = peerId === nextPigeonPeerId ? PlayerRole.PIGEON : PlayerRole.HAWK;
       player.weight = player.role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
       player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
     });
