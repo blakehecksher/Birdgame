@@ -353,21 +353,13 @@ export class Game {
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
-<<<<<<< HEAD
         const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
         this.lobbyUI.showWaiting(
           connectedPeers === 1
             ? '1 friend connected. Launching round...'
             : `${connectedPeers} friends connected. New joiner ready.`
         );
-        if (!this.gameState.remotePeerId) {
-          this.gameState.remotePeerId = remotePeerId;
-        }
-=======
-        // Track the most recently connected remote peer so legacy
-        // single-remote accessors point at an active client.
         this.gameState.remotePeerId = remotePeerId;
->>>>>>> 4568a061d17d9cca88b183622e3a6f5dd5157bfd
         if (this.isGameStarted) {
           if (!this.gameState.players.has(remotePeerId)) {
             const remoteCount = this.remotePlayers.size + 1;
