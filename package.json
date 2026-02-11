@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && npx gh-pages -d dist"
+    "deploy": "npm run build && npx gh-pages -d dist",
+    "test:prepare": "node -e \"const fs=require('fs'); fs.mkdirSync('.test-out',{recursive:true}); fs.writeFileSync('.test-out/package.json','{\\\"type\\\":\\\"commonjs\\\"}\\n');\"",
+    "test:compile": "tsc -p tsconfig.test-src.json",
+    "test": "npm run test:prepare && npm run test:compile && node --test --test-isolation=none tests/core/GameState.test.cjs tests/network/NetworkManager.test.cjs"
   },
   "dependencies": {
     "peerjs": "^1.5.2",

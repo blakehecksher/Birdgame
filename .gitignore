@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 dist-ssr/
+.test-build/
+.tmp-test-build/
+.test-out/
 
 # Editor directories and files
 .vscode/*
