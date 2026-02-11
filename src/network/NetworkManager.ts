@@ -25,6 +25,8 @@ export class NetworkManager {
   private lastSyncTime: number = 0;
   private lastInputTime: number = 0;
   private tickRate: number;
+  private lastWorldSyncTime: number = 0;
+  private worldSyncIntervalMs: number = 250;
 
   // State buffer for interpolation (client only)
   private stateBuffer: StateSyncMessage[] = [];
@@ -306,24 +308,29 @@ export class NetworkManager {
       };
     });
 
-    const message = createMessage<StateSyncMessage>(MessageType.STATE_SYNC, {
-      players,
-      foods: Array.from(this.gameState.foods.values()).map((food) => ({
+    const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = { players };
+    const shouldSendWorldState = now - this.lastWorldSyncTime >= this.worldSyncIntervalMs;
+
+    if (shouldSendWorldState) {
+      payload.foods = Array.from(this.gameState.foods.values()).map((food) => ({
         id: food.id,
         type: food.type,
         position: { x: food.position.x, y: food.position.y, z: food.position.z },
         exists: food.exists,
         respawnTimer: food.respawnTimer ?? 0,
-      })),
-      npcs: Array.from(this.gameState.npcs.values()).map((npc) => ({
+      }));
+      payload.npcs = Array.from(this.gameState.npcs.values()).map((npc) => ({
         id: npc.id,
         type: npc.type,
         position: { x: npc.position.x, y: npc.position.y, z: npc.position.z },
         rotation: npc.rotation,
         state: npc.state,
         exists: npc.exists,
-      })),
-    });
+      }));
+      this.lastWorldSyncTime = now;
+    }
+
+    const message = createMessage<StateSyncMessage>(MessageType.STATE_SYNC, payload);
 
     this.peerConnection.send(message);
     this.lastSyncTime = now;
@@ -378,6 +385,107 @@ export class NetworkManager {
   } | null {
     if (this.gameState.isHost) return null;
     return this.localAuthoritativeState;
+  }
+
+  /**
+   * Sample a smoothed remote player transform using buffered host snapshots.
+   */
+  public getInterpolatedRemoteState(peerId: string): {
+    position: THREE.Vector3;
+    rotation: THREE.Euler;
+    velocity: THREE.Vector3;
+    role: PlayerRole;
+    isEating: boolean;
+  } | null {
+    if (this.gameState.isHost) return null;
+
+    const snapshots = this.stateBuffer
+      .map((snapshot) => {
+        const player = snapshot.players[peerId];
+        if (!player) return null;
+        return {
+          timestamp: snapshot.timestamp,
+          position: player.position,
+          rotation: player.rotation,
+          velocity: player.velocity,
+          role: player.role,
+          isEating: !!player.isEating,
+        };
+      })
+      .filter((snapshot): snapshot is {
+        timestamp: number;
+        position: { x: number; y: number; z: number };
+        rotation: { x: number; y: number; z: number };
+        velocity: { x: number; y: number; z: number };
+        role: PlayerRole;
+        isEating: boolean;
+      } => snapshot !== null);
+
+    if (snapshots.length === 0) return null;
+
+    const renderTimestamp = Date.now() - GAME_CONFIG.STATE_BUFFER_TIME;
+
+    // If render time is before our buffer, snap to earliest known snapshot.
+    if (renderTimestamp <= snapshots[0].timestamp) {
+      const earliest = snapshots[0];
+      return {
+        position: new THREE.Vector3(earliest.position.x, earliest.position.y, earliest.position.z),
+        rotation: new THREE.Euler(earliest.rotation.x, earliest.rotation.y, earliest.rotation.z),
+        velocity: new THREE.Vector3(earliest.velocity.x, earliest.velocity.y, earliest.velocity.z),
+        role: earliest.role,
+        isEating: earliest.isEating,
+      };
+    }
+
+    for (let i = 0; i < snapshots.length - 1; i++) {
+      const older = snapshots[i];
+      const newer = snapshots[i + 1];
+      if (renderTimestamp < older.timestamp || renderTimestamp > newer.timestamp) continue;
+
+      const span = Math.max(1, newer.timestamp - older.timestamp);
+      const alpha = Math.max(0, Math.min(1, (renderTimestamp - older.timestamp) / span));
+
+      const startPos = new THREE.Vector3(older.position.x, older.position.y, older.position.z);
+      const endPos = new THREE.Vector3(newer.position.x, newer.position.y, newer.position.z);
+      const startVel = new THREE.Vector3(older.velocity.x, older.velocity.y, older.velocity.z);
+      const endVel = new THREE.Vector3(newer.velocity.x, newer.velocity.y, newer.velocity.z);
+
+      return {
+        position: startPos.lerp(endPos, alpha),
+        rotation: new THREE.Euler(
+          THREE.MathUtils.lerp(older.rotation.x, newer.rotation.x, alpha),
+          this.lerpAngle(older.rotation.y, newer.rotation.y, alpha),
+          THREE.MathUtils.lerp(older.rotation.z, newer.rotation.z, alpha)
+        ),
+        velocity: startVel.lerp(endVel, alpha),
+        role: newer.role,
+        isEating: alpha < 0.5 ? older.isEating : newer.isEating,
+      };
+    }
+
+    // Extrapolate a short distance from the latest snapshot if needed.
+    const latest = snapshots[snapshots.length - 1];
+    const extrapolationSeconds = Math.max(
+      0,
+      Math.min(0.1, (renderTimestamp - latest.timestamp) / 1000)
+    );
+
+    return {
+      position: new THREE.Vector3(
+        latest.position.x + (latest.velocity.x * extrapolationSeconds),
+        latest.position.y + (latest.velocity.y * extrapolationSeconds),
+        latest.position.z + (latest.velocity.z * extrapolationSeconds)
+      ),
+      rotation: new THREE.Euler(latest.rotation.x, latest.rotation.y, latest.rotation.z),
+      velocity: new THREE.Vector3(latest.velocity.x, latest.velocity.y, latest.velocity.z),
+      role: latest.role,
+      isEating: latest.isEating,
+    };
+  }
+
+  private lerpAngle(start: number, end: number, alpha: number): number {
+    const delta = Math.atan2(Math.sin(end - start), Math.cos(end - start));
+    return start + (delta * alpha);
   }
 
   /**
@@ -446,6 +554,8 @@ export class NetworkManager {
    */
   public sendRoundStart(
     roundNumber: number,
+    roundStartAt: number,
+    countdownSeconds: number,
     roles: { [peerId: string]: PlayerRole },
     spawnStates: RoundStartMessage['spawnStates']
   ): void {
@@ -453,6 +563,8 @@ export class NetworkManager {
 
     const message = createMessage<RoundStartMessage>(MessageType.ROUND_START, {
       roundNumber,
+      roundStartAt,
+      countdownSeconds,
       roles,
       spawnStates,
     });

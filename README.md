@@ -39,6 +39,13 @@ You need Node.js (version 18+ recommended) to run this project.
 - `Mouse Y` Pitch up/down (click canvas to lock pointer)
 - `Arrow Up/Down` Pitch up/down (keyboard alternative)
 
+## Lobby + Replay Flow
+
+- Join screen prompts for `Name` before `Connect` (optional).
+- Blank names auto-fallback to a generated `bird-XYZ` name and persist locally.
+- After each round, host gets `Play Again`; clients see waiting status.
+- New rounds launch with a synced `3, 2, 1, GO` countdown and locked input until live.
+
 ## Development
 
 ### Build for Production

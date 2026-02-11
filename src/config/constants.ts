@@ -12,6 +12,7 @@ export const GAME_CONFIG = {
   PIGEON_WEIGHT_PENALTY: 0.05, // Speed reduction per weight unit
   PIGEON_SIZE_SCALE: 0.05, // Visual size increase per weight unit
   PIGEON_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  PIGEON_MOUSE_BANK_SENSITIVITY: 0.004, // Subtle mouse X -> bank assist
   PIGEON_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
   PIGEON_BANK_ACCELERATION: 12.0,
   PIGEON_BANK_SPRING_STIFFNESS: 12.0,
@@ -30,6 +31,7 @@ export const GAME_CONFIG = {
   HAWK_DIVE_MAX_SPEED_MULT: 2.0, // Max speed multiplier at steepest dive
   HAWK_DIVE_ENERGY_DRAIN_MULT: 2.5, // Extra energy drain while diving
   HAWK_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  HAWK_MOUSE_BANK_SENSITIVITY: 0.004, // Subtle mouse X -> bank assist
   HAWK_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
   HAWK_BANK_ACCELERATION: 8.0,
   HAWK_BANK_SPRING_STIFFNESS: 6.0,
@@ -51,8 +53,8 @@ export const GAME_CONFIG = {
   CAMERA_ZOOM_SPEED: 1.5,
 
   // Network settings
-  TICK_RATE: 20, // Updates per second
-  STATE_BUFFER_TIME: 100, // Milliseconds
+  TICK_RATE: 30, // Movement updates per second
+  STATE_BUFFER_TIME: 120, // Interpolation delay in milliseconds
 
   // Food settings
   FOOD_RESPAWN_TIME: 30, // Seconds

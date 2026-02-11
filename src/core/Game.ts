@@ -12,7 +12,7 @@ import { PeerConnection } from '../network/PeerConnection';
 import { NetworkManager } from '../network/NetworkManager';
 import { FoodCollectedMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
-import { ScoreUI } from '../ui/ScoreUI';
+import { RoundEndOptions, ScoreUI } from '../ui/ScoreUI';
 import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
 import { FoodSpawner } from '../world/FoodSpawner';
 import { Environment } from '../world/Environment';
@@ -23,6 +23,13 @@ import { NPCSpawner } from '../world/NPCSpawner';
 import { LeaderboardService } from '../services/LeaderboardService';
 import { AudioManager } from '../audio/AudioManager';
 import { SOUND_MANIFEST, SFX } from '../audio/SoundManifest';
+import {
+  PERSONAL_BESTS_STORAGE_KEY,
+  PersonalBests,
+  parsePersonalBests,
+  stringifyPersonalBests,
+  updatePersonalBest,
+} from '../ui/personalBests';
 
 /**
  * Main game orchestrator
@@ -78,6 +85,11 @@ export class Game {
   private windLoopId: string | null = null;
   private wasHawkDiving: boolean = false;
   private nextPigeonPeerId: string | null = null;
+  private personalBests: PersonalBests;
+  private countdownIntervalId: number | null = null;
+  private countdownHideTimeoutId: number | null = null;
+  private countdownActive: boolean = false;
+  private readonly roundCountdownSeconds: number = 3;
 
   constructor() {
     // Get canvas
@@ -99,7 +111,10 @@ export class Game {
     this.lobbyUI = new LobbyUI();
     this.scoreUI = new ScoreUI();
     this.leaderboard = new LeaderboardService();
+    this.personalBests = this.loadPersonalBests();
     this.lobbyUI.show();
+    this.lobbyUI.renderPersonalBests(this.personalBests);
+    this.lobbyUI.showPersonalBestBadge(false);
     this.refreshLeaderboard();
 
     // Set up lobby callbacks
@@ -129,13 +144,11 @@ export class Game {
     AudioManager.init();
     this.setupVolumeControls();
 
-    // Check for room code in URL (auto-join)
+    // If room code is in URL, prefill join screen but let player confirm name first.
     const params = new URLSearchParams(window.location.search);
     const roomCode = params.get('room');
     if (roomCode) {
-      // Auto-join with the room code
-      this.lobbyUI.showConnecting();
-      this.joinGame(roomCode);
+      this.lobbyUI.prefillJoinRoomCode(roomCode.replace(/^birdgame-/i, '').toUpperCase());
     }
 
     // Start render loop (even before game starts)
@@ -269,17 +282,27 @@ export class Game {
     if (!this.gameState) return;
 
     const expectedRemoteIds = new Set<string>();
+    let roleChanged = false;
     this.gameState.players.forEach((playerState, peerId) => {
       if (peerId === this.gameState!.localPeerId) return;
       expectedRemoteIds.add(peerId);
       const yaw = playerState.role === PlayerRole.PIGEON ? 0 : Math.PI;
-      this.ensureRemotePlayer(peerId, playerState.role, playerState.position, yaw);
+      const remotePlayer = this.ensureRemotePlayer(peerId, playerState.role, playerState.position, yaw);
+      if (remotePlayer.role !== playerState.role) {
+        remotePlayer.role = playerState.role;
+        this.swapPlayerModel(remotePlayer);
+        roleChanged = true;
+      }
     });
 
     for (const peerId of Array.from(this.remotePlayers.keys())) {
       if (!expectedRemoteIds.has(peerId)) {
         this.removeRemotePlayer(peerId);
       }
+    }
+
+    if (roleChanged) {
+      this.syncRoleControllers();
     }
   }
 
@@ -312,6 +335,7 @@ export class Game {
   private async hostGame(): Promise<void> {
     try {
       this.lobbyUI.showWaiting('Initializing...');
+      this.lobbyUI.getEffectiveUsername();
 
       const roomCode = this.generateRoomCode();
 
@@ -329,6 +353,12 @@ export class Game {
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
+        const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
+        this.lobbyUI.showWaiting(
+          connectedPeers === 1
+            ? '1 friend connected. Launching round...'
+            : `${connectedPeers} friends connected. New joiner ready.`
+        );
         if (!this.gameState.remotePeerId) {
           this.gameState.remotePeerId = remotePeerId;
         }
@@ -360,6 +390,7 @@ export class Game {
    */
   private async joinGame(hostPeerId: string): Promise<void> {
     try {
+      this.lobbyUI.getEffectiveUsername();
       this.lobbyUI.showConnecting();
 
       // Normalize accepted inputs:
@@ -552,9 +583,8 @@ export class Game {
       instructions.addEventListener('click', dismiss);
     }
 
-    // Start first round
+    // Start first round immediately for connection reliability.
     this.gameState.startRound();
-
     this.isGameStarted = true;
 
     // Start ambient sounds
@@ -614,7 +644,7 @@ export class Game {
   ): void {
     if (!this.localPlayer || !this.gameState || !this.leaderboard.isConfigured()) return;
 
-    const username = this.lobbyUI.getUsername();
+    const username = this.lobbyUI.getEffectiveUsername();
     const tasks: Promise<void>[] = [];
 
     if (this.localPlayer.role === PlayerRole.PIGEON) {
@@ -644,14 +674,73 @@ export class Game {
       .catch((error) => console.warn('Leaderboard submit failed:', error));
   }
 
+  private loadPersonalBests(): PersonalBests {
+    const raw = localStorage.getItem(PERSONAL_BESTS_STORAGE_KEY);
+    return parsePersonalBests(raw);
+  }
+
+  private savePersonalBests(): void {
+    localStorage.setItem(PERSONAL_BESTS_STORAGE_KEY, stringifyPersonalBests(this.personalBests));
+    this.lobbyUI.renderPersonalBests(this.personalBests);
+  }
+
+  private createRoundEndOptions(bestCallouts: string[]): RoundEndOptions {
+    const isHost = !!this.gameState?.isHost;
+    return {
+      canStartNextRound: isHost,
+      nextRoundLabel: isHost ? 'Play Again' : 'Waiting for host...',
+      statusText: isHost
+        ? 'Round Over -> Ready. Click Play Again to launch countdown.'
+        : 'Round Over. Waiting for host to launch next round.',
+      personalBestCallouts: bestCallouts,
+    };
+  }
+
+  private updatePersonalBestsForRound(
+    winner: 'pigeon' | 'hawk',
+    pigeonWeight: number,
+    survivalTime: number
+  ): string[] {
+    if (!this.localPlayer) return [];
+
+    const callouts: string[] = [];
+
+    if (this.localPlayer.role === PlayerRole.PIGEON) {
+      const update = updatePersonalBest(this.personalBests, 'fattest_pigeon', pigeonWeight);
+      if (update.isNewBest) {
+        this.personalBests = update.bests;
+        callouts.push('New Personal Best: Fattest pigeon!');
+      }
+    }
+
+    if (winner === 'hawk' && this.localPlayer.role === PlayerRole.HAWK) {
+      const update = updatePersonalBest(this.personalBests, 'fastest_hawk_kill', survivalTime);
+      if (update.isNewBest) {
+        this.personalBests = update.bests;
+        callouts.push('New Personal Best: Fastest hawk kill!');
+      }
+    }
+
+    this.lobbyUI.showPersonalBestBadge(callouts.length > 0);
+    if (callouts.length > 0) {
+      this.savePersonalBests();
+      this.showEventPopup('New Personal Best!', 'warn');
+    }
+
+    return callouts;
+  }
+
   /**
    * Update game state
    */
   private update(deltaTime: number): void {
     if (!this.gameState || !this.localPlayer) return;
 
-    // Get input
-    const input = this.inputManager.getInputState();
+    // Get input (locked during countdown)
+    const rawInput = this.inputManager.getInputState();
+    const input = this.countdownActive
+      ? { ...rawInput, forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0 }
+      : rawInput;
 
     // Apply flight controls to local player
     this.flightController.applyInput(this.localPlayer, input, deltaTime);
@@ -720,7 +809,7 @@ export class Game {
         // Host: Apply each remote player's input and simulate them authoritatively.
         for (const [peerId, remotePlayer] of this.remotePlayers) {
           const remoteInput = this.networkManager.getRemoteInput(peerId);
-          if (remoteInput) {
+          if (remoteInput && !this.countdownActive) {
             this.flightController.applyInput(remotePlayer, remoteInput, deltaTime);
           }
           remotePlayer.update(deltaTime);
@@ -766,16 +855,23 @@ export class Game {
         // Update all remote players from host-authoritative state.
         for (const [peerId, remotePlayer] of this.remotePlayers) {
           const remotePlayerState = this.gameState.players.get(peerId);
-          if (remotePlayerState) {
+          const interpolated = this.networkManager.getInterpolatedRemoteState(peerId);
+          if (interpolated) {
+            remotePlayer.position.copy(interpolated.position);
+            remotePlayer.rotation.copy(interpolated.rotation);
+            remotePlayer.velocity.copy(interpolated.velocity);
+            remotePlayer.isEating = interpolated.isEating;
+          } else if (remotePlayerState) {
             remotePlayer.position.copy(remotePlayerState.position);
             remotePlayer.rotation.copy(remotePlayerState.rotation);
             remotePlayer.velocity.copy(remotePlayerState.velocity);
             remotePlayer.isEating = !!remotePlayerState.isEating;
-
-            // Apply host-authoritative transform directly on client.
-            remotePlayer.mesh.position.copy(remotePlayer.position);
-            remotePlayer.applyMeshRotation();
+          } else {
+            continue;
           }
+
+          remotePlayer.mesh.position.copy(remotePlayer.position);
+          remotePlayer.applyMeshRotation();
         }
 
         this.syncVisualStatsFromGameState();
@@ -844,10 +940,14 @@ export class Game {
 
     const timerDisplay = document.getElementById('timer-display');
     if (timerDisplay && this.gameState) {
-      const remaining = Math.max(0, Math.floor(this.gameState.getRemainingTime()));
-      const minutes = Math.floor(remaining / 60);
-      const seconds = remaining % 60;
-      timerDisplay.textContent = `Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+      if (this.countdownActive) {
+        timerDisplay.textContent = 'Time: Starting...';
+      } else {
+        const remaining = Math.max(0, Math.floor(this.gameState.getRemainingTime()));
+        const minutes = Math.floor(remaining / 60);
+        const seconds = remaining % 60;
+        timerDisplay.textContent = `Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+      }
     }
 
     const eatingIndicator = document.getElementById('eating-indicator');
@@ -885,6 +985,19 @@ export class Game {
         connectionDot.style.background = '#ffaa00';
       } else {
         connectionDot.style.background = '#ff4444';
+      }
+    }
+    const connectionText = document.getElementById('connection-text');
+    if (connectionText && this.peerConnection && this.gameState) {
+      if (this.gameState.isHost) {
+        const connectedPeers = this.peerConnection.getRemotePeerIds().length;
+        connectionText.textContent = connectedPeers > 0
+          ? `Host live: ${connectedPeers} friend${connectedPeers === 1 ? '' : 's'} connected`
+          : 'Host live: waiting for friends';
+      } else {
+        connectionText.textContent = this.peerConnection.isConnected()
+          ? 'Connected to host'
+          : (this.peerConnection.getIsReconnecting() ? 'Reconnecting...' : 'Disconnected');
       }
     }
 
@@ -1043,12 +1156,14 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
@@ -1087,12 +1202,14 @@ export class Game {
     AudioManager.play(SFX.PIGEON_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('pigeon', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'pigeon',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('pigeon', pigeonWeight, survivalTime);
 
@@ -1129,12 +1246,14 @@ export class Game {
       AudioManager.play(SFX.PIGEON_WINS, 'sfx');
     }
 
+    const bestCallouts = this.updatePersonalBestsForRound(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       winner === 'pigeon' ? 'pigeon' : 'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
 
@@ -1142,8 +1261,7 @@ export class Game {
   }
 
   /**
-   * Start next round with role swap
-   * Called by host when "Next Round" is clicked, or by client when ROUND_START message received
+   * Start next round flow (host only).
    */
   private startNextRound(): void {
     if (!this.gameState || !this.localPlayer) return;
@@ -1187,24 +1305,105 @@ export class Game {
       this.syncNPCStateToGameState();
     }
 
-    // Start new round
-    this.gameState.startRound();
+    this.launchRoundCountdown(spawnStates);
+  }
 
-    // Send round start to all clients (host only)
+  private launchRoundCountdown(spawnStates: RoundStartMessage['spawnStates']): void {
+    if (!this.gameState) return;
+
+    const nextRoundNumber = this.gameState.roundNumber + 1;
+    const roundStartAt = Date.now() + (this.roundCountdownSeconds * 1000);
+    const roles: { [peerId: string]: PlayerRole } = {};
+
+    this.gameState.players.forEach((playerState, peerId) => {
+      roles[peerId] = playerState.role;
+    });
+
     if (this.networkManager) {
-      const roles: { [peerId: string]: PlayerRole } = {};
-      this.gameState.players.forEach((playerState, peerId) => {
-        roles[peerId] = playerState.role;
-      });
-
       this.networkManager.sendRoundStart(
-        this.gameState.roundNumber,
+        nextRoundNumber,
+        roundStartAt,
+        this.roundCountdownSeconds,
         roles,
         spawnStates
       );
     }
 
+    this.runRoundCountdown(nextRoundNumber, roundStartAt, this.roundCountdownSeconds);
+  }
+
+  private runRoundCountdown(roundNumber: number, roundStartAt: number, countdownSeconds: number): void {
+    this.clearRoundCountdownState();
+    this.lobbyUI.showPersonalBestBadge(false);
+    this.countdownActive = true;
+    this.inputManager.resetInputState();
+    this.networkManager?.resetRemoteInput();
+
+    const overlay = document.getElementById('round-countdown');
+    const valueEl = document.getElementById('round-countdown-value');
+    const labelEl = document.getElementById('round-countdown-label');
+
+    if (overlay) overlay.style.display = 'flex';
+    if (labelEl) labelEl.textContent = 'Get ready';
+
+    let started = false;
+    const tick = () => {
+      const msRemaining = roundStartAt - Date.now();
+      if (msRemaining <= 0) {
+        if (!started) {
+          started = true;
+          if (valueEl) valueEl.textContent = 'GO';
+          if (labelEl) labelEl.textContent = 'Round live';
+          this.finishRoundCountdown(roundNumber);
+        }
+        return;
+      }
+
+      const secondsLeft = Math.min(countdownSeconds, Math.max(1, Math.ceil(msRemaining / 1000)));
+      if (valueEl) valueEl.textContent = `${secondsLeft}`;
+      if (labelEl) labelEl.textContent = 'Get ready';
+    };
+
+    tick();
+    this.countdownIntervalId = window.setInterval(tick, 100);
+  }
+
+  private finishRoundCountdown(roundNumber: number): void {
+    if (!this.gameState) return;
+
+    if (this.countdownIntervalId !== null) {
+      window.clearInterval(this.countdownIntervalId);
+      this.countdownIntervalId = null;
+    }
+
+    this.gameState.roundNumber = Math.max(0, roundNumber - 1);
+    this.gameState.startRound();
+    this.countdownActive = false;
     AudioManager.play(SFX.ROUND_START, 'sfx');
+
+    this.countdownHideTimeoutId = window.setTimeout(() => {
+      const overlay = document.getElementById('round-countdown');
+      if (overlay) overlay.style.display = 'none';
+      const valueEl = document.getElementById('round-countdown-value');
+      if (valueEl) valueEl.textContent = `${this.roundCountdownSeconds}`;
+      const labelEl = document.getElementById('round-countdown-label');
+      if (labelEl) labelEl.textContent = 'Get ready';
+      this.countdownHideTimeoutId = null;
+    }, 450);
+  }
+
+  private clearRoundCountdownState(): void {
+    if (this.countdownIntervalId !== null) {
+      window.clearInterval(this.countdownIntervalId);
+      this.countdownIntervalId = null;
+    }
+    if (this.countdownHideTimeoutId !== null) {
+      window.clearTimeout(this.countdownHideTimeoutId);
+      this.countdownHideTimeoutId = null;
+    }
+    const overlay = document.getElementById('round-countdown');
+    if (overlay) overlay.style.display = 'none';
+    this.countdownActive = false;
   }
 
   /**
@@ -1287,6 +1486,7 @@ export class Game {
       // Play eating sound (host plays for local player only; client plays via handleFoodCollected)
       if (player === this.localPlayer) {
         this.playEatSound(food.type);
+        this.showFoodPopup(food.type, food.weightGain, food.energyGain);
       }
     });
   }
@@ -1332,6 +1532,7 @@ export class Game {
       // Play kill sound for local hawk
       if (player === this.localPlayer) {
         AudioManager.play(SFX.NPC_KILL, 'sfx');
+        this.showEventPopup(`NPC caught +${killed.getEnergyReward().toFixed(0)} energy`, 'good');
       }
       break;
     }
@@ -1656,12 +1857,14 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
@@ -1691,6 +1894,7 @@ export class Game {
     // Play eating sound for local player pickup
     if (isLocalCollector) {
       this.playEatSound(food.type);
+      this.showFoodPopup(food.type, food.weightGain, food.energyGain);
     }
   }
 
@@ -1718,6 +1922,7 @@ export class Game {
     // Play kill sound for local hawk
     if (isLocalCollector) {
       AudioManager.play(SFX.NPC_KILL, 'sfx');
+      this.showEventPopup(`NPC caught +${this.getNPCEnergyReward(message.npcType).toFixed(0)} energy`, 'good');
     }
   }
 
@@ -1729,6 +1934,7 @@ export class Game {
     if (this.gameState?.isHost) return; // Host handles this directly
 
     if (!this.gameState || !this.localPlayer) return;
+    this.scoreUI.hide();
 
     console.log('Client received round start from host:', message.roundNumber);
 
@@ -1797,11 +2003,9 @@ export class Game {
     }
     this.syncNPCStateFromGameState();
 
-    // Start new round
-    this.gameState.roundNumber = Math.max(0, message.roundNumber - 1);
-    this.gameState.startRound();
-
-    AudioManager.play(SFX.ROUND_START, 'sfx');
+    const countdownSeconds = message.countdownSeconds ?? this.roundCountdownSeconds;
+    const roundStartAt = message.roundStartAt ?? (Date.now() + (countdownSeconds * 1000));
+    this.runRoundCountdown(message.roundNumber, roundStartAt, countdownSeconds);
   }
 
   /**
@@ -1816,6 +2020,7 @@ export class Game {
           this.gameState.players.delete(peerId);
           this.removeRemotePlayer(peerId);
           this.syncRoleControllers();
+          this.showEventPopup('A player disconnected', 'warn');
         }
         return;
       }
@@ -1877,6 +2082,31 @@ export class Game {
     }
   }
 
+  private showFoodPopup(foodType: FoodType, weightGain: number, energyGain: number): void {
+    if (!this.localPlayer) return;
+    if (this.localPlayer.role === PlayerRole.PIGEON && foodType !== FoodType.RAT) {
+      this.showEventPopup(`+${weightGain.toFixed(1)} weight`, 'good');
+      return;
+    }
+    if (this.localPlayer.role === PlayerRole.HAWK && foodType === FoodType.RAT) {
+      this.showEventPopup(`+${energyGain.toFixed(0)} energy`, 'good');
+    }
+  }
+
+  private showEventPopup(text: string, variant: 'good' | 'warn' = 'good'): void {
+    const feed = document.getElementById('event-feed');
+    if (!feed) return;
+
+    const item = document.createElement('div');
+    item.className = `event-popup ${variant}`;
+    item.textContent = text;
+    feed.appendChild(item);
+
+    window.setTimeout(() => {
+      item.remove();
+    }, 1500);
+  }
+
   /**
    * Check hawk dive state transitions and play dive sound.
    */
@@ -1899,6 +2129,7 @@ export class Game {
    */
   public dispose(): void {
     window.removeEventListener('keydown', this.debugToggleHandler);
+    this.clearRoundCountdownState();
     if (this.ambientLoopId) AudioManager.stop(this.ambientLoopId);
     if (this.windLoopId) AudioManager.stop(this.windLoopId);
     AudioManager.dispose();

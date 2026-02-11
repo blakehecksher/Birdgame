@@ -14,7 +14,8 @@ export class FlightController {
 
   /**
    * Apply player input to control flight using a banking model.
-   * A/D bank the bird (roll), banking drives yaw (turning).
+   * A/D bank the bird (roll), with subtle mouse-X bank assist.
+   * Banking drives yaw (turning).
    * Mouse vertical controls pitch only.
    */
   public applyInput(player: Player, input: InputState, deltaTime: number): void {
@@ -45,12 +46,16 @@ export class FlightController {
     const pitchSensitivity = isPigeon
       ? GAME_CONFIG.PIGEON_MOUSE_PITCH_SENSITIVITY
       : GAME_CONFIG.HAWK_MOUSE_PITCH_SENSITIVITY;
+    const mouseBankSensitivity = isPigeon
+      ? GAME_CONFIG.PIGEON_MOUSE_BANK_SENSITIVITY
+      : GAME_CONFIG.HAWK_MOUSE_BANK_SENSITIVITY;
     const maxPitch = isPigeon
       ? GAME_CONFIG.PIGEON_MAX_PITCH
       : GAME_CONFIG.HAWK_MAX_PITCH;
 
     // === BANKING PHYSICS (spring-damper system) ===
-    const bankInput = input.strafe; // A/D now means bank, not strafe
+    const mouseBankInput = THREE.MathUtils.clamp(input.mouseX * mouseBankSensitivity, -1, 1);
+    const bankInput = THREE.MathUtils.clamp(input.strafe + mouseBankInput, -1, 1);
 
     // Spring force pulls bank back to level
     const springForce = -player.rotation.z * bankSpring;

@@ -16,6 +16,8 @@
     "src/core/GameState.ts",
     "src/network/messages.ts",
     "src/network/NetworkManager.ts",
-    "src/entities/NPC.ts"
+    "src/entities/NPC.ts",
+    "src/ui/LobbyUI.ts",
+    "src/ui/personalBests.ts"
   ]
 }
