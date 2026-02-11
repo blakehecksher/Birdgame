@@ -329,9 +329,9 @@ export class Game {
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
-        if (!this.gameState.remotePeerId) {
-          this.gameState.remotePeerId = remotePeerId;
-        }
+        // Track the most recently connected remote peer so legacy
+        // single-remote accessors point at an active client.
+        this.gameState.remotePeerId = remotePeerId;
         if (this.isGameStarted) {
           if (!this.gameState.players.has(remotePeerId)) {
             const remoteCount = this.remotePlayers.size + 1;
@@ -1815,6 +1815,10 @@ export class Game {
         if (peerId) {
           this.gameState.players.delete(peerId);
           this.removeRemotePlayer(peerId);
+          if (this.gameState.remotePeerId === peerId) {
+            const remainingPeerIds = this.peerConnection?.getRemotePeerIds() ?? [];
+            this.gameState.remotePeerId = remainingPeerIds.length > 0 ? remainingPeerIds[0] : null;
+          }
           this.syncRoleControllers();
         }
         return;
