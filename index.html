@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hawk & Pigeon</title>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&display=swap');
+
       * {
         margin: 0;
         padding: 0;
@@ -12,9 +14,13 @@
       }
 
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
         overflow: hidden;
-        background-color: #000;
+        background:
+          radial-gradient(circle at 14% 18%, rgba(56, 155, 210, 0.33), transparent 44%),
+          radial-gradient(circle at 88% 84%, rgba(255, 169, 71, 0.2), transparent 36%),
+          linear-gradient(180deg, #0c1b2b 0%, #060f1a 70%, #04090f 100%);
+        color: #eef6ff;
       }
 
       #game-canvas {
@@ -41,44 +47,52 @@
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        width: min(92vw, 900px);
-        background: rgba(8, 14, 20, 0.72);
-        border-radius: 14px;
+        width: min(94vw, 900px);
+        height: min(90vh, 785px);
+        max-height: 90vh;
+        background: linear-gradient(180deg, rgba(10, 20, 32, 0.92), rgba(5, 10, 17, 0.9));
+        border-radius: 18px;
         color: white;
         text-align: center;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(127, 186, 219, 0.34);
+        box-shadow:
+          0 24px 55px rgba(0, 0, 0, 0.55),
+          0 0 0 1px rgba(255, 186, 84, 0.16) inset;
         overflow: hidden;
-        backdrop-filter: blur(3px);
+        backdrop-filter: blur(5px);
       }
 
       #lobby-hero {
         position: relative;
         display: block;
-        height: 430px;
+        height: auto;
+        min-height: 0;
         background-image: url('/Birdgame/assets/Landing%20Page-CnrhSd6a.png');
         background-size: contain;
         background-repeat: no-repeat;
-        background-position: center top;
+        background-position: center center;
         background-color: rgba(8, 14, 20, 0.92);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+        /* border-bottom: 1px solid rgba(154, 202, 233, 0.23); */
       }
 
       #lobby-hero::before {
         content: '';
         position: absolute;
         inset: 0;
-        /* background: linear-gradient(
+        background: linear-gradient(
           180deg,
-          rgba(6, 14, 22, 0.35) 0%,
-          rgba(0, 0, 0, 0.58) 68%,
-          rgba(0, 0, 0, 0.82) 100%
-        ); */
+          rgba(3, 10, 19, 0.1) 0%,
+          rgba(4, 8, 15, 0.14) 48%,
+          rgba(5, 10, 18, 0.75) 100%
+        );
       }
 
       #lobby-content {
         position: relative;
         z-index: 1;
+        height: 100%;
+        display: grid;
+        grid-template-rows: 5fr 3fr;
       }
 
       #lobby h1 {
@@ -89,131 +103,289 @@
       }
 
       #lobby button {
-        background: #4CAF50;
+        background: linear-gradient(180deg, #48bf6a, #2e9e54);
         color: white;
         border: none;
-        padding: 12px 24px;
-        font-size: 16px;
-        border-radius: 4px;
+        padding: 10px 22px;
+        font-size: 15px;
+        font-weight: 700;
+        border-radius: 8px;
         cursor: pointer;
-        margin: 8px;
-        min-width: 120px;
+        margin: 6px;
+        min-width: 132px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        box-shadow: 0 10px 22px rgba(18, 82, 44, 0.32);
+        transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
       }
 
       #lobby button:hover {
-        background: #45a049;
+        filter: brightness(1.06);
+        transform: translateY(-1px);
+        box-shadow: 0 14px 24px rgba(18, 82, 44, 0.4);
       }
 
       #lobby input {
-        padding: 10px;
-        font-size: 16px;
-        border-radius: 4px;
-        border: 1px solid #ccc;
+        padding: 9px 10px;
+        font-size: 15px;
+        border-radius: 8px;
+        border: 1px solid rgba(188, 219, 238, 0.42);
+        background: rgba(6, 16, 27, 0.65);
+        color: #ecf7ff;
         width: 100%;
-        margin: 8px 0;
+        margin: 6px 0;
       }
 
       #lobby-content .subtitle {
-        font-size: 1.2rem;
-        color: rgba(255, 255, 255, 0.92);
-        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
-        margin-bottom: 0.6rem;
+        font-size: 0.95rem;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        color: rgba(199, 225, 245, 0.95);
+        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+        margin: 0;
+        line-height: 1.2;
       }
 
       #lobby-band {
         margin-top: 0;
-        padding: 1rem 1.2rem 1.3rem;
-        min-height: 130px;
+        padding: 0.7rem 0.9rem 1rem;
+        overflow: hidden;
         background: linear-gradient(
           180deg,
-          rgba(5, 11, 18, 0.72) 0%,
-          rgba(4, 8, 13, 0.9) 100%
+          rgba(4, 11, 19, 0.72) 0%,
+          rgba(3, 8, 15, 0.94) 100%
         );
+      }
+
+      .leaderboard-list {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(120, 173, 206, 0.72) rgba(8, 25, 40, 0.72);
+      }
+
+      .leaderboard-list::-webkit-scrollbar {
+        width: 9px;
+      }
+
+      .leaderboard-list::-webkit-scrollbar-track {
+        background: rgba(8, 25, 40, 0.72);
+        border-radius: 999px;
+      }
+
+      .leaderboard-list::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, rgba(143, 201, 238, 0.9), rgba(95, 154, 194, 0.9));
+        border-radius: 999px;
+        border: 2px solid rgba(8, 25, 40, 0.8);
+      }
+
+      .leaderboard-list::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(180deg, rgba(169, 219, 248, 0.95), rgba(114, 174, 216, 0.95));
+      }
+
+      #lobby-bottom-layout {
+        display: grid;
+        grid-template-columns: minmax(290px, 0.46fr) minmax(330px, 0.54fr);
+        grid-template-areas:
+          "subtitle subtitle"
+          "play leaderboard";
+        column-gap: 12px;
+        row-gap: 8px;
+        align-items: stretch;
+        height: auto;
+      }
+
+      #lobby-bottom-layout > .subtitle {
+        grid-area: subtitle;
+        justify-self: center;
+      }
+
+      #play-panel {
+        grid-area: play;
+        background: rgba(8, 22, 35, 0.58);
+        border: 1px solid rgba(156, 203, 233, 0.2);
+        border-radius: 12px;
+        padding: 12px 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: auto;
       }
 
       #lobby-menu,
       #host-screen,
       #join-screen {
-        max-width: 560px;
+        max-width: none;
         margin: 0 auto;
+        width: min(100%, 290px);
+        text-align: center;
+      }
+
+      #lobby-menu {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
       }
 
       #username-row {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        margin-bottom: 10px;
+        gap: 8px;
+        margin-bottom: 8px;
+        width: 100%;
+      }
+
+      .username-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        width: 100%;
       }
 
       #username-row label {
         color: #cfd8dc;
-        font-size: 0.9rem;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+
+      .username-row label {
+        color: #cfd8dc;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
       }
 
       #username-input {
-        max-width: 220px;
+        max-width: 210px;
         margin: 0 !important;
         text-align: center;
-        font-size: 14px !important;
+        font-size: 13px !important;
+      }
+
+      #join-username-input {
+        max-width: 210px;
+        margin: 0 !important;
+        text-align: center;
+        font-size: 13px !important;
+      }
+
+      .action-row {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-top: 2px;
+      }
+
+      .action-row button {
+        margin: 0;
+      }
+
+      #host-btn,
+      #join-btn {
+        width: 136px;
+        min-width: 136px;
+        white-space: nowrap;
+        padding: 11px 0;
+        line-height: 1;
       }
 
       #leaderboard-panel {
-        margin: 14px auto 0;
-        width: min(100%, 560px);
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: 10px 12px;
+        grid-area: leaderboard;
+        margin: 0;
+        width: 100%;
+        background: rgba(11, 24, 36, 0.7);
+        border: 1px solid rgba(154, 199, 228, 0.2);
+        border-radius: 12px;
+        padding: 10px 10px 14px;
         text-align: left;
+        height: auto;
       }
 
       #leaderboard-panel h3 {
-        margin: 0 0 8px 0;
-        font-size: 14px;
-        color: #e5eef3;
+        margin: 0 0 6px 0;
+        font-size: 13px;
+        color: #d8ecfb;
         text-align: center;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
       }
 
       .leaderboard-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 12px;
+        gap: 8px;
       }
 
       .leaderboard-grid h4 {
-        font-size: 12px;
-        margin-bottom: 6px;
-        color: #a7c7db;
+        font-size: 11px;
+        margin-bottom: 5px;
+        color: #9cc4df;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
       }
 
       .leaderboard-list {
         list-style: none;
         margin: 0;
         padding: 0;
-        min-height: 80px;
+        min-height: 88px;
+        max-height: 96px;
+        overflow-y: auto;
       }
 
       .leaderboard-list li {
-        font-size: 12px;
+        font-size: 11px;
         color: #dbe5eb;
-        margin-bottom: 4px;
+        margin-bottom: 3px;
       }
 
       #leaderboard-status {
-        margin-top: 8px;
+        margin-top: 6px;
         font-size: 11px;
         color: #9fb5c4;
         text-align: center;
       }
 
+      #personal-best-panel {
+        margin-top: 10px;
+        padding-top: 8px;
+        padding-bottom: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      #personal-best-panel h4 {
+        margin: 0 0 6px;
+        font-size: 12px;
+        color: #cfe6f3;
+      }
+
+      .best-line {
+        font-size: 12px;
+        color: #dbe5eb;
+        margin-bottom: 3px;
+      }
+
+      #personal-best-badge {
+        display: none;
+        margin-top: 6px;
+        font-size: 11px;
+        color: #ffe082;
+      }
+
       @media (max-width: 640px) {
         #lobby {
-          width: 92vw;
+          width: 95vw;
+          height: min(94vh, 760px);
+          max-height: 94vh;
         }
 
         #lobby-hero {
-          height: 300px;
+          background-position: center 18%;
         }
 
         #lobby h1 {
@@ -227,8 +399,26 @@
 
         #lobby-band {
           margin-top: 0;
-          min-height: 120px;
-          padding: 0.9rem 0.8rem 1rem;
+          min-height: 0;
+          padding: 0.2rem 0.7rem 0.2rem;
+          overflow-y: auto;
+        }
+
+        #lobby-bottom-layout {
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "subtitle"
+            "play"
+            "leaderboard";
+          row-gap: 10px;
+        }
+
+        #play-panel {
+          align-items: flex-start;
+        }
+
+        .leaderboard-grid {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -274,6 +464,12 @@
 
       #copy-code-btn:hover {
         background: #0d47a1 !important;
+      }
+
+      .screen-status {
+        margin-top: 10px;
+        color: #9fb5c4;
+        font-size: 12px;
       }
 
       #hud {
@@ -347,6 +543,12 @@
         font-size: 1.2rem;
       }
 
+      #score-status {
+        margin-top: 12px;
+        color: #9fb5c4;
+        font-size: 14px;
+      }
+
       #score-screen button {
         background: #2196F3;
         color: white;
@@ -362,11 +564,17 @@
         background: #0b7dda;
       }
 
+      #score-screen button:disabled {
+        background: #546e7a;
+        cursor: not-allowed;
+      }
+
       .hidden {
         display: none !important;
       }
 
       /* Instructions overlay */
+
       #instructions {
         position: absolute;
         top: 50%;
@@ -416,6 +624,7 @@
       }
 
       /* Disconnect overlay */
+
       #disconnect-overlay {
         position: absolute;
         top: 50%;
@@ -456,6 +665,7 @@
       }
 
       /* Connection status */
+
       #connection-status {
         position: absolute;
         top: 20px;
@@ -467,6 +677,10 @@
         color: #aaa;
         text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
         pointer-events: none;
+      }
+
+      #connection-text {
+        color: #d7e3ea;
       }
 
       #connection-dot {
@@ -498,6 +712,7 @@
       }
 
       /* Volume controls */
+
       #volume-btn {
         position: absolute;
         bottom: 20px;
@@ -560,6 +775,7 @@
       }
 
       /* Dive indicator */
+
       #dive-indicator {
         position: absolute;
         top: 20px;
@@ -575,6 +791,7 @@
       }
 
       /* Flight attitude indicator (thumbstick style) */
+
       #flight-indicator {
         position: absolute;
         top: 50%;
@@ -603,6 +820,7 @@
       }
 
       /* Small crosshair lines at center */
+
       #flight-indicator::before,
       #flight-indicator::after {
         content: '';
@@ -625,8 +843,69 @@
         top: 50%;
         transform: translateY(-50%);
       }
+
+      #round-countdown {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        pointer-events: none;
+        z-index: 18;
+      }
+
+      #round-countdown-value {
+        font-size: 92px;
+        color: #ffffff;
+        text-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+      }
+
+      #round-countdown-label {
+        margin-top: 6px;
+        font-size: 18px;
+        color: #dbe5eb;
+      }
+
+      #event-feed {
+        position: absolute;
+        left: 20px;
+        bottom: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+        z-index: 14;
+      }
+
+      .event-popup {
+        background: rgba(0, 0, 0, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        color: #eef7ff;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        transform: translateY(8px);
+        opacity: 0;
+        animation: event-pop 1.4s ease forwards;
+      }
+
+      .event-popup.good {
+        border-color: rgba(129, 199, 132, 0.6);
+      }
+
+      .event-popup.warn {
+        border-color: rgba(255, 183, 77, 0.65);
+      }
+
+      @keyframes event-pop {
+        0% { opacity: 0; transform: translateY(8px); }
+        15% { opacity: 1; transform: translateY(0); }
+        80% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(-6px); }
+      }
     </style>
-    <script type="module" crossorigin src="/Birdgame/assets/index-PQCiWLOi.js"></script>
+    <script type="module" crossorigin src="/Birdgame/assets/index-lPIYPz92.js"></script>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
@@ -637,14 +916,47 @@
         <div id="lobby-content">
           <div id="lobby-hero"></div>
           <div id="lobby-band">
-            <p class="subtitle">Web-based 3D chase game</p>
-            <div id="lobby-menu">
-              <div id="username-row">
-                <label for="username-input">Name</label>
-                <input type="text" id="username-input" maxlength="20" placeholder="arcade name" />
+            <div id="lobby-bottom-layout">
+              <!-- <p class="subtitle">Web-based 3D chase game</p> -->
+              <div id="play-panel">
+                <div id="lobby-menu">
+                  <div id="username-row">
+                    <label for="username-input">Name</label>
+                    <input type="text" id="username-input" maxlength="20" placeholder="arcade name" />
+                  </div>
+                  <div class="action-row">
+                    <button id="host-btn">Host Game</button>
+                    <button id="join-btn">Join Game</button>
+                  </div>
+                </div>
+
+                <div id="host-screen" class="hidden">
+                  <p>Share this link with your friend:</p>
+                  <div class="room-code-row">
+                    <div id="room-code"></div>
+                    <button id="copy-code-btn">Copy Code</button>
+                  </div>
+                  <input type="text" id="room-link" readonly />
+                  <button id="copy-link-btn">Copy Link</button>
+                  <input type="hidden" id="peer-id-display" />
+                  <p id="host-status" class="screen-status">Waiting for player to join...</p>
+                </div>
+
+                <div id="join-screen" class="hidden">
+                  <p>Input Username (optional):</p>
+                  <div class="username-row">
+                    <label for="join-username-input">Name</label>
+                    <input type="text" id="join-username-input" maxlength="20" placeholder="arcade name" />
+                  </div>
+                  <p>Enter room code:</p>
+                  <input type="text" id="peer-id-input" placeholder="e.g. HAWK42" style="text-transform: uppercase; letter-spacing: 2px; text-align: center;" />
+                  <div class="action-row">
+                    <button id="connect-btn">Connect</button>
+                    <button id="back-btn">Back</button>
+                  </div>
+                  <p id="join-status" class="screen-status">Input username (optional), then enter room code.</p>
+                </div>
               </div>
-              <button id="host-btn">Host Game</button>
-              <button id="join-btn">Join Game</button>
 
               <div id="leaderboard-panel">
                 <h3>Leaderboard</h3>
@@ -659,26 +971,13 @@
                   </div>
                 </div>
                 <div id="leaderboard-status">Leaderboard unavailable</div>
+                <div id="personal-best-panel">
+                  <h4>Your Personal Bests</h4>
+                  <div id="personal-best-fat" class="best-line">Fattest pigeon: --</div>
+                  <div id="personal-best-kill" class="best-line">Fastest hawk kill: --</div>
+                  <div id="personal-best-badge">New Personal Best!</div>
+                </div>
               </div>
-            </div>
-
-            <div id="host-screen" class="hidden">
-              <p>Share this link with your friend:</p>
-              <div class="room-code-row">
-                <div id="room-code"></div>
-                <button id="copy-code-btn">Copy Code</button>
-              </div>
-              <input type="text" id="room-link" readonly />
-              <button id="copy-link-btn">Copy Link</button>
-              <input type="hidden" id="peer-id-display" />
-              <p style="margin-top: 16px; color: #aaa;">Waiting for player to join...</p>
-            </div>
-
-            <div id="join-screen" class="hidden">
-              <p>Enter room code:</p>
-              <input type="text" id="peer-id-input" placeholder="e.g. HAWK42" style="text-transform: uppercase; letter-spacing: 2px; text-align: center;" />
-              <button id="connect-btn">Connect</button>
-              <button id="back-btn">Back</button>
             </div>
           </div>
         </div>
@@ -703,7 +1002,8 @@
       <div id="score-screen">
         <h2 id="score-title">Round Over!</h2>
         <div id="score-details"></div>
-        <button id="next-round-btn">Next Round</button>
+        <div id="score-status">Round over. Ready for the next run.</div>
+        <button id="next-round-btn">Play Again</button>
       </div>
 
       <!-- Instructions Overlay -->
@@ -735,7 +1035,17 @@
       <!-- Connection Status -->
       <div id="connection-status">
         <span id="connection-dot"></span>
+        <span id="connection-text">Connecting...</span>
       </div>
+
+      <!-- Round Countdown -->
+      <div id="round-countdown">
+        <div id="round-countdown-value">3</div>
+        <div id="round-countdown-label">Get ready</div>
+      </div>
+
+      <!-- Event Feed -->
+      <div id="event-feed"></div>
 
       <!-- Debug Console -->
       <div id="debug-console"></div>
@@ -765,6 +1075,6 @@
         <div id="flight-dot"></div>
       </div>
     </div>
-
+
   </body>
 </html>
