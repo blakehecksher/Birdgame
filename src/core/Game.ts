@@ -353,6 +353,7 @@ export class Game {
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
+<<<<<<< HEAD
         const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
         this.lobbyUI.showWaiting(
           connectedPeers === 1
@@ -362,6 +363,11 @@ export class Game {
         if (!this.gameState.remotePeerId) {
           this.gameState.remotePeerId = remotePeerId;
         }
+=======
+        // Track the most recently connected remote peer so legacy
+        // single-remote accessors point at an active client.
+        this.gameState.remotePeerId = remotePeerId;
+>>>>>>> 4568a061d17d9cca88b183622e3a6f5dd5157bfd
         if (this.isGameStarted) {
           if (!this.gameState.players.has(remotePeerId)) {
             const remoteCount = this.remotePlayers.size + 1;
@@ -2019,6 +2025,10 @@ export class Game {
         if (peerId) {
           this.gameState.players.delete(peerId);
           this.removeRemotePlayer(peerId);
+          if (this.gameState.remotePeerId === peerId) {
+            const remainingPeerIds = this.peerConnection?.getRemotePeerIds() ?? [];
+            this.gameState.remotePeerId = remainingPeerIds.length > 0 ? remainingPeerIds[0] : null;
+          }
           this.syncRoleControllers();
           this.showEventPopup('A player disconnected', 'warn');
         }
