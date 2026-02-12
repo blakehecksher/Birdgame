@@ -417,6 +417,36 @@ export class Environment {
     return collided;
   }
 
+
+  /**
+   * True when the player is contacting walkable surfaces (ground or rooftops).
+   * Tree trunks/canopies are intentionally excluded.
+   */
+  public isOnWalkableSurface(position: THREE.Vector3, radius: number): boolean {
+    const epsilon = GAME_CONFIG.SURFACE_CONTACT_EPSILON;
+
+    if (position.y <= Math.max(1, radius) + epsilon) {
+      return true;
+    }
+
+    const sphereBottom = position.y - radius;
+    for (const building of this.buildings) {
+      const withinRoofBounds =
+        position.x >= building.min.x - radius &&
+        position.x <= building.max.x + radius &&
+        position.z >= building.min.z - radius &&
+        position.z <= building.max.z + radius;
+
+      if (!withinRoofBounds) continue;
+
+      if (Math.abs(sphereBottom - building.max.y) <= epsilon) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   /**
    * Slow hawks in tree canopies.
    */
