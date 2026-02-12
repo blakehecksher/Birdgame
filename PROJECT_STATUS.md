@@ -1,7 +1,7 @@
 # Hawk & Pigeon - Development Status
 
 **Project Started:** February 6, 2025
-**Last Updated:** February 8, 2026
+**Last Updated:** February 12, 2026
 
 ## Project Overview
 
@@ -668,6 +668,35 @@ Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon
 5. ~~Limited map (2x2 blocks)~~ — Phase 3 expansion to 10x10 grid (see above)
 6. ~~No dive attack for hawk~~ — FIXED (Phase 2)
 7. No leaderboard (future)
+
+---
+
+## Line In The Sand Snapshot (Feb 12, 2026)
+
+This section is the current baseline reference for future work.
+
+**Multiplayer NPC smoothing (non-host quality):**
+- Client NPCs no longer hard-snap every snapshot.
+- NPC snapshots now set movement targets, and client visuals lerp each frame toward those targets.
+- Added `NPCSpawner.updateVisuals(deltaTime)` and wired it into the client game loop.
+- Host AI/authority model is unchanged (host still drives true NPC simulation).
+
+**Player collision shape overhaul:**
+- Replaced shared sphere-only player hitbox tuning with per-role ellipsoid dimensions:
+  - `PIGEON_COLLISION_RX/RY/RZ`
+  - `HAWK_COLLISION_RX/RY/RZ`
+- Added transparent/wireframe collision debug shells on birds (`SHOW_COLLISION_DEBUG`) for live tuning.
+- Pigeon growth scaling now scales ellipsoid collision extents correctly.
+- Hawk-vs-pigeon collision now uses ellipsoid distance check (axis-scaled overlap test).
+
+**Ground contact alignment fix:**
+- Minimum flight height now uses each bird's vertical collision half-extent (`collisionRadii.y`) instead of hardcoded `y=1`.
+- Result: bird body and shadow are much closer to the ground plane and match visual expectations.
+
+**Current tuning/tradeoff notes:**
+- Building and pickup checks still use `player.radius` (derived as max ellipsoid axis) for conservative/simple behavior.
+- `SHOW_COLLISION_DEBUG` should be toggled off for normal play once tuning is complete.
+- NPC smoothing currently favors visual continuity over strict snapshot snapping on clients.
 
 ---
 
