@@ -145,6 +145,8 @@ export interface RoundEndMessage extends BaseMessage {
 export interface RoundStartMessage extends BaseMessage {
   type: MessageType.ROUND_START;
   roundNumber: number;
+  roundStartAt: number;
+  countdownSeconds: number;
   roles: {
     [peerId: string]: PlayerRole;
   };

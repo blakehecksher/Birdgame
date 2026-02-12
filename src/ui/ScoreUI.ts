@@ -2,10 +2,18 @@
  * Score UI Manager
  * Displays round end results and scores
  */
+export interface RoundEndOptions {
+  canStartNextRound?: boolean;
+  nextRoundLabel?: string;
+  statusText?: string;
+  personalBestCallouts?: string[];
+}
+
 export class ScoreUI {
   private scoreScreen: HTMLElement;
   private scoreTitle: HTMLElement;
   private scoreDetails: HTMLElement;
+  private scoreStatus: HTMLElement;
   private nextRoundBtn: HTMLButtonElement;
 
   private onNextRoundCallback: (() => void) | null = null;
@@ -14,6 +22,7 @@ export class ScoreUI {
     this.scoreScreen = document.getElementById('score-screen')!;
     this.scoreTitle = document.getElementById('score-title')!;
     this.scoreDetails = document.getElementById('score-details')!;
+    this.scoreStatus = document.getElementById('score-status')!;
     this.nextRoundBtn = document.getElementById('next-round-btn') as HTMLButtonElement;
 
     this.setupEventListeners();
@@ -36,16 +45,15 @@ export class ScoreUI {
     pigeonWeight: number,
     survivalTime: number,
     pigeonScore: { totalWeight: number; roundsWon: number },
-    hawkScore: { killTimes: number[]; roundsWon: number }
+    hawkScore: { killTimes: number[]; roundsWon: number },
+    options: RoundEndOptions = {}
   ): void {
-    // Set title
     if (winner === 'hawk') {
-      this.scoreTitle.textContent = '🦅 Hawk Wins!';
+      this.scoreTitle.textContent = 'Hawk Wins!';
     } else {
-      this.scoreTitle.textContent = '🕊️ Pigeon Survived!';
+      this.scoreTitle.textContent = 'Pigeon Survived!';
     }
 
-    // Build score details HTML
     const minutes = Math.floor(survivalTime / 60);
     const seconds = Math.floor(survivalTime % 60);
     const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -62,14 +70,26 @@ export class ScoreUI {
         <strong>Cumulative Scores:</strong>
       </div>
       <div class="score-item">
-        🕊️ Pigeon - Total Weight: ${pigeonScore.totalWeight.toFixed(1)} | Rounds Won: ${pigeonScore.roundsWon}
+        Pigeon - Total Weight: ${pigeonScore.totalWeight.toFixed(1)} | Rounds Won: ${pigeonScore.roundsWon}
       </div>
       <div class="score-item">
-        🦅 Hawk - Avg Kill Time: ${this.getAverageKillTime(hawkScore.killTimes)} | Rounds Won: ${hawkScore.roundsWon}
+        Hawk - Avg Kill Time: ${this.getAverageKillTime(hawkScore.killTimes)} | Rounds Won: ${hawkScore.roundsWon}
       </div>
     `;
 
+    if (options.personalBestCallouts && options.personalBestCallouts.length > 0) {
+      detailsHTML += `
+        <hr style="margin: 20px 0; border-color: #666;">
+        ${options.personalBestCallouts
+          .map((callout) => `<div class="score-item"><strong>${callout}</strong></div>`)
+          .join('')}
+      `;
+    }
+
     this.scoreDetails.innerHTML = detailsHTML;
+    this.scoreStatus.textContent = options.statusText ?? 'Round over. Ready for the next run.';
+    this.nextRoundBtn.textContent = options.nextRoundLabel ?? 'Play Again';
+    this.nextRoundBtn.disabled = options.canStartNextRound === false;
     this.show();
   }
 

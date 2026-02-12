@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-out",
+    "rootDir": "src",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "allowImportingTsExtensions": false,
+    "isolatedModules": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "src/config/constants.ts",
+    "src/core/GameState.ts",
+    "src/network/messages.ts",
+    "src/network/NetworkManager.ts",
+    "src/entities/NPC.ts",
+    "src/ui/LobbyUI.ts",
+    "src/ui/personalBests.ts"
+  ]
+}

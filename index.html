@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hawk & Pigeon</title>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&display=swap');
+
       * {
         margin: 0;
         padding: 0;
@@ -12,10 +14,48 @@
       }
 
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
         overflow: hidden;
-        background-color: #000;
+        background:
+          radial-gradient(circle at 14% 18%, rgba(56, 155, 210, 0.33), transparent 44%),
+          radial-gradient(circle at 88% 84%, rgba(255, 169, 71, 0.2), transparent 36%),
+          linear-gradient(180deg, #0c1b2b 0%, #060f1a 70%, #04090f 100%);
+        color: #eef6ff;
       }
+
+      /* Ambient floating particles */
+      @keyframes float-up {
+        0% { transform: translateY(100vh) scale(0); opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+      }
+
+      #lobby-particles {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .particle {
+        position: absolute;
+        width: 2px;
+        height: 2px;
+        background: rgba(160, 210, 245, 0.35);
+        border-radius: 50%;
+        animation: float-up linear infinite;
+      }
+
+      .particle:nth-child(1) { left: 8%; animation-duration: 14s; animation-delay: 0s; width: 2px; height: 2px; }
+      .particle:nth-child(2) { left: 22%; animation-duration: 18s; animation-delay: 3s; width: 3px; height: 3px; background: rgba(255, 200, 120, 0.2); }
+      .particle:nth-child(3) { left: 38%; animation-duration: 12s; animation-delay: 6s; }
+      .particle:nth-child(4) { left: 55%; animation-duration: 20s; animation-delay: 1s; width: 1px; height: 1px; }
+      .particle:nth-child(5) { left: 70%; animation-duration: 16s; animation-delay: 8s; width: 2px; height: 2px; background: rgba(255, 200, 120, 0.18); }
+      .particle:nth-child(6) { left: 85%; animation-duration: 22s; animation-delay: 4s; }
+      .particle:nth-child(7) { left: 45%; animation-duration: 15s; animation-delay: 10s; width: 1px; height: 1px; }
+      .particle:nth-child(8) { left: 92%; animation-duration: 19s; animation-delay: 7s; width: 2px; height: 2px; }
 
       #game-canvas {
         display: block;
@@ -36,49 +76,92 @@
         pointer-events: auto;
       }
 
+      /* Lobby entrance animation */
+      @keyframes lobby-entrance {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -48%) scale(0.97);
+          filter: blur(6px);
+        }
+        100% {
+          opacity: 1;
+          transform: translate(-50%, -50%) scale(1);
+          filter: blur(0px);
+        }
+      }
+
+      /* Animated border glow */
+      @keyframes border-glow {
+        0%, 100% { border-color: rgba(127, 186, 219, 0.30); box-shadow: 0 24px 55px rgba(0, 0, 0, 0.55), 0 0 30px rgba(56, 155, 210, 0.08), 0 0 0 1px rgba(255, 186, 84, 0.12) inset; }
+        50% { border-color: rgba(157, 206, 235, 0.42); box-shadow: 0 24px 55px rgba(0, 0, 0, 0.55), 0 0 40px rgba(56, 155, 210, 0.14), 0 0 0 1px rgba(255, 186, 84, 0.20) inset; }
+      }
+
       #lobby {
         position: absolute;
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        width: min(92vw, 900px);
-        background: rgba(8, 14, 20, 0.72);
-        border-radius: 14px;
+        width: min(94vw, 900px);
+        height: min(90vh, 785px);
+        max-height: 90vh;
+        background: linear-gradient(180deg, rgba(10, 20, 32, 0.94), rgba(5, 10, 17, 0.92));
+        border-radius: 18px;
         color: white;
         text-align: center;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(127, 186, 219, 0.34);
+        box-shadow:
+          0 24px 55px rgba(0, 0, 0, 0.55),
+          0 0 30px rgba(56, 155, 210, 0.08),
+          0 0 0 1px rgba(255, 186, 84, 0.16) inset;
         overflow: hidden;
-        backdrop-filter: blur(3px);
+        backdrop-filter: blur(8px);
+        animation: lobby-entrance 0.7s cubic-bezier(0.22, 1, 0.36, 1) both,
+                   border-glow 4s ease-in-out infinite 0.7s;
       }
 
       #lobby-hero {
         position: relative;
         display: block;
-        height: 430px;
+        height: auto;
+        min-height: 0;
         background-image: url('./assets/Landing%20Page.png');
         background-size: contain;
         background-repeat: no-repeat;
-        background-position: center top;
+        background-position: center center;
         background-color: rgba(8, 14, 20, 0.92);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+        /* border-bottom: 1px solid rgba(154, 202, 233, 0.23); */
       }
 
       #lobby-hero::before {
         content: '';
         position: absolute;
         inset: 0;
-        /* background: linear-gradient(
+        background: linear-gradient(
           180deg,
-          rgba(6, 14, 22, 0.35) 0%,
-          rgba(0, 0, 0, 0.58) 68%,
-          rgba(0, 0, 0, 0.82) 100%
-        ); */
+          rgba(3, 10, 19, 0.08) 0%,
+          rgba(4, 8, 15, 0.10) 40%,
+          rgba(5, 10, 18, 0.70) 88%,
+          rgba(5, 10, 18, 0.88) 100%
+        );
+      }
+
+      /* Subtle glow line between hero and controls */
+      #lobby-hero::after {
+        content: '';
+        position: absolute;
+        bottom: 0;
+        left: 10%;
+        right: 10%;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(127, 196, 235, 0.25), rgba(255, 186, 84, 0.18), transparent);
       }
 
       #lobby-content {
         position: relative;
         z-index: 1;
+        height: 100%;
+        display: grid;
+        grid-template-rows: 5fr 3fr;
       }
 
       #lobby h1 {
@@ -88,132 +171,369 @@
         text-shadow: 0 3px 12px rgba(0, 0, 0, 0.8);
       }
 
+      @keyframes btn-glow-pulse {
+        0%, 100% { box-shadow: 0 8px 20px rgba(18, 82, 44, 0.30), 0 0 0 0 rgba(72, 191, 106, 0); }
+        50% { box-shadow: 0 8px 20px rgba(18, 82, 44, 0.30), 0 0 18px 2px rgba(72, 191, 106, 0.18); }
+      }
+
       #lobby button {
-        background: #4CAF50;
+        background: linear-gradient(180deg, #48bf6a, #2e9e54);
         color: white;
         border: none;
-        padding: 12px 24px;
-        font-size: 16px;
-        border-radius: 4px;
+        padding: 10px 22px;
+        font-size: 15px;
+        font-weight: 700;
+        border-radius: 8px;
         cursor: pointer;
-        margin: 8px;
-        min-width: 120px;
+        margin: 6px;
+        min-width: 132px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        box-shadow: 0 8px 20px rgba(18, 82, 44, 0.32);
+        transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+                    filter 0.18s ease,
+                    box-shadow 0.18s ease;
+        position: relative;
+        overflow: hidden;
+      }
+
+      /* Sheen sweep on hover */
+      #lobby button::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 60%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+        transition: left 0.4s ease;
+        pointer-events: none;
+      }
+
+      #lobby button:hover::after {
+        left: 120%;
       }
 
       #lobby button:hover {
-        background: #45a049;
+        filter: brightness(1.08);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(18, 82, 44, 0.4), 0 0 16px rgba(72, 191, 106, 0.15);
+      }
+
+      #lobby button:active {
+        transform: translateY(1px) scale(0.98);
+        filter: brightness(0.95);
+        box-shadow: 0 4px 12px rgba(18, 82, 44, 0.3);
+        transition-duration: 0.06s;
       }
 
       #lobby input {
-        padding: 10px;
-        font-size: 16px;
-        border-radius: 4px;
-        border: 1px solid #ccc;
+        padding: 9px 10px;
+        font-size: 15px;
+        border-radius: 8px;
+        border: 1px solid rgba(188, 219, 238, 0.25);
+        background: rgba(6, 16, 27, 0.65);
+        color: #ecf7ff;
         width: 100%;
-        margin: 8px 0;
+        margin: 6px 0;
+        transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+        outline: none;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
+      }
+
+      #lobby input:focus {
+        border-color: rgba(127, 196, 235, 0.55);
+        box-shadow: 0 0 12px rgba(56, 155, 210, 0.18), 0 0 0 2px rgba(56, 155, 210, 0.08);
+        background: rgba(8, 20, 34, 0.8);
+      }
+
+      #lobby input::placeholder {
+        color: rgba(160, 190, 210, 0.45);
+        font-style: italic;
       }
 
       #lobby-content .subtitle {
-        font-size: 1.2rem;
-        color: rgba(255, 255, 255, 0.92);
-        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
-        margin-bottom: 0.6rem;
+        font-size: 0.95rem;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        color: rgba(199, 225, 245, 0.95);
+        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+        margin: 0;
+        line-height: 1.2;
       }
 
       #lobby-band {
         margin-top: 0;
-        padding: 1rem 1.2rem 1.3rem;
-        min-height: 130px;
+        padding: 0.7rem 0.9rem 1rem;
+        overflow: hidden;
         background: linear-gradient(
           180deg,
-          rgba(5, 11, 18, 0.72) 0%,
-          rgba(4, 8, 13, 0.9) 100%
+          rgba(4, 11, 19, 0.72) 0%,
+          rgba(3, 8, 15, 0.94) 100%
         );
+      }
+
+      .leaderboard-list {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(120, 173, 206, 0.72) rgba(8, 25, 40, 0.72);
+      }
+
+      .leaderboard-list::-webkit-scrollbar {
+        width: 9px;
+      }
+
+      .leaderboard-list::-webkit-scrollbar-track {
+        background: rgba(8, 25, 40, 0.72);
+        border-radius: 999px;
+      }
+
+      .leaderboard-list::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, rgba(143, 201, 238, 0.9), rgba(95, 154, 194, 0.9));
+        border-radius: 999px;
+        border: 2px solid rgba(8, 25, 40, 0.8);
+      }
+
+      .leaderboard-list::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(180deg, rgba(169, 219, 248, 0.95), rgba(114, 174, 216, 0.95));
+      }
+
+      #lobby-bottom-layout {
+        display: grid;
+        grid-template-columns: minmax(290px, 0.46fr) minmax(330px, 0.54fr);
+        grid-template-areas:
+          "subtitle subtitle"
+          "play leaderboard";
+        column-gap: 12px;
+        row-gap: 8px;
+        align-items: stretch;
+        height: auto;
+      }
+
+      #lobby-bottom-layout > .subtitle {
+        grid-area: subtitle;
+        justify-self: center;
+      }
+
+      #play-panel {
+        grid-area: play;
+        background: linear-gradient(165deg, rgba(12, 28, 42, 0.65), rgba(6, 16, 28, 0.72));
+        border: 1px solid rgba(156, 203, 233, 0.16);
+        border-radius: 12px;
+        padding: 12px 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: auto;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+
+      @keyframes screen-fade-in {
+        0% { opacity: 0; transform: translateY(6px); }
+        100% { opacity: 1; transform: translateY(0); }
       }
 
       #lobby-menu,
       #host-screen,
       #join-screen {
-        max-width: 560px;
+        max-width: none;
         margin: 0 auto;
+        width: min(100%, 290px);
+        text-align: center;
+        animation: screen-fade-in 0.35s ease both;
+      }
+
+      #lobby-menu {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
       }
 
       #username-row {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        margin-bottom: 10px;
+        gap: 8px;
+        margin-bottom: 8px;
+        width: 100%;
+      }
+
+      .username-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        width: 100%;
       }
 
       #username-row label {
-        color: #cfd8dc;
-        font-size: 0.9rem;
+        color: rgba(180, 205, 220, 0.85);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+      }
+
+      .username-row label {
+        color: rgba(180, 205, 220, 0.85);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
       }
 
       #username-input {
-        max-width: 220px;
+        max-width: 210px;
         margin: 0 !important;
         text-align: center;
-        font-size: 14px !important;
+        font-size: 13px !important;
+      }
+
+      #join-username-input {
+        max-width: 210px;
+        margin: 0 !important;
+        text-align: center;
+        font-size: 13px !important;
+      }
+
+      .action-row {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-top: 2px;
+      }
+
+      .action-row button {
+        margin: 0;
+      }
+
+      #host-btn {
+        width: 136px;
+        min-width: 136px;
+        white-space: nowrap;
+        padding: 11px 0;
+        line-height: 1;
+        animation: btn-glow-pulse 2.5s ease-in-out infinite;
+      }
+
+      #join-btn {
+        width: 136px;
+        min-width: 136px;
+        white-space: nowrap;
+        padding: 11px 0;
+        line-height: 1;
+        background: linear-gradient(180deg, #4a9fd8, #2d7ab8);
+        box-shadow: 0 8px 20px rgba(18, 55, 100, 0.32);
+      }
+
+      #join-btn:hover {
+        box-shadow: 0 12px 28px rgba(18, 55, 100, 0.4), 0 0 16px rgba(74, 159, 216, 0.15);
+      }
+
+      #join-btn:active {
+        box-shadow: 0 4px 12px rgba(18, 55, 100, 0.3);
       }
 
       #leaderboard-panel {
-        margin: 14px auto 0;
-        width: min(100%, 560px);
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: 10px 12px;
+        grid-area: leaderboard;
+        margin: 0;
+        width: 100%;
+        background: linear-gradient(165deg, rgba(11, 26, 40, 0.65), rgba(6, 14, 24, 0.72));
+        border: 1px solid rgba(154, 199, 228, 0.14);
+        border-radius: 12px;
+        padding: 10px 10px 14px;
         text-align: left;
+        height: auto;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
 
       #leaderboard-panel h3 {
         margin: 0 0 8px 0;
-        font-size: 14px;
-        color: #e5eef3;
+        font-size: 13px;
+        color: #d8ecfb;
         text-align: center;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(154, 199, 228, 0.1);
       }
 
       .leaderboard-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 12px;
+        gap: 8px;
       }
 
       .leaderboard-grid h4 {
-        font-size: 12px;
-        margin-bottom: 6px;
-        color: #a7c7db;
+        font-size: 11px;
+        margin-bottom: 5px;
+        color: #9cc4df;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
       }
 
       .leaderboard-list {
         list-style: none;
         margin: 0;
         padding: 0;
-        min-height: 80px;
+        min-height: 88px;
+        max-height: 96px;
+        overflow-y: auto;
       }
 
       .leaderboard-list li {
-        font-size: 12px;
+        font-size: 11px;
         color: #dbe5eb;
-        margin-bottom: 4px;
+        margin-bottom: 3px;
       }
 
       #leaderboard-status {
-        margin-top: 8px;
+        margin-top: 6px;
         font-size: 11px;
         color: #9fb5c4;
         text-align: center;
       }
 
+      #personal-best-panel {
+        margin-top: 10px;
+        padding-top: 8px;
+        padding-bottom: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      #personal-best-panel h4 {
+        margin: 0 0 6px;
+        font-size: 12px;
+        color: #cfe6f3;
+      }
+
+      .best-line {
+        font-size: 12px;
+        color: #dbe5eb;
+        margin-bottom: 3px;
+      }
+
+      #personal-best-badge {
+        display: none;
+        margin-top: 6px;
+        font-size: 11px;
+        color: #ffe082;
+      }
+
       @media (max-width: 640px) {
         #lobby {
-          width: 92vw;
+          width: 95vw;
+          height: min(94vh, 760px);
+          max-height: 94vh;
         }
 
         #lobby-hero {
-          height: 300px;
+          background-position: center 18%;
         }
 
         #lobby h1 {
@@ -227,8 +547,26 @@
 
         #lobby-band {
           margin-top: 0;
-          min-height: 120px;
-          padding: 0.9rem 0.8rem 1rem;
+          min-height: 0;
+          padding: 0.2rem 0.7rem 0.2rem;
+          overflow-y: auto;
+        }
+
+        #lobby-bottom-layout {
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "subtitle"
+            "play"
+            "leaderboard";
+          row-gap: 10px;
+        }
+
+        #play-panel {
+          align-items: flex-start;
+        }
+
+        .leaderboard-grid {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -238,6 +576,7 @@
         letter-spacing: 4px;
         color: #4CAF50;
         margin: 0;
+        text-shadow: 0 0 12px rgba(76, 175, 80, 0.35);
       }
 
       .room-code-row {
@@ -276,6 +615,27 @@
         background: #0d47a1 !important;
       }
 
+      #back-btn {
+        background: linear-gradient(180deg, rgba(80, 95, 110, 0.7), rgba(55, 65, 78, 0.8)) !important;
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25) !important;
+        min-width: 90px !important;
+      }
+
+      #back-btn:hover {
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35) !important;
+      }
+
+      #connect-btn {
+        animation: btn-glow-pulse 2.5s ease-in-out infinite;
+      }
+
+      .screen-status {
+        margin-top: 10px;
+        color: #9fb5c4;
+        font-size: 12px;
+        font-style: italic;
+      }
+
       #hud {
         position: absolute;
         top: 20px;
@@ -284,9 +644,11 @@
         font-size: 16px;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
         display: none;
-        background: rgba(0, 0, 0, 0.4);
+        background: linear-gradient(165deg, rgba(10, 20, 32, 0.65), rgba(5, 10, 18, 0.7));
         padding: 12px 16px;
-        border-radius: 8px;
+        border-radius: 10px;
+        border: 1px solid rgba(127, 186, 219, 0.12);
+        backdrop-filter: blur(4px);
       }
 
       #hud .stat {
@@ -308,10 +670,6 @@
         transition: width 0.3s ease;
       }
 
-      .bar-weight {
-        background: linear-gradient(90deg, #9999ff, #cc88ff);
-      }
-
       .bar-energy {
         background: linear-gradient(90deg, #ff4444, #ffaa00, #44ff44);
       }
@@ -328,18 +686,22 @@
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
+        background: linear-gradient(180deg, rgba(10, 20, 32, 0.95), rgba(5, 10, 17, 0.95));
         padding: 3rem;
-        border-radius: 8px;
+        border-radius: 14px;
         color: white;
         text-align: center;
         display: none;
         min-width: 500px;
+        border: 1px solid rgba(127, 186, 219, 0.25);
+        box-shadow: 0 24px 55px rgba(0, 0, 0, 0.55), 0 0 30px rgba(56, 155, 210, 0.08);
+        backdrop-filter: blur(8px);
       }
 
       #score-screen h2 {
         margin-bottom: 1.5rem;
         font-size: 2rem;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
       }
 
       #score-screen .score-item {
@@ -347,19 +709,72 @@
         font-size: 1.2rem;
       }
 
+      #score-status {
+        margin-top: 12px;
+        color: #9fb5c4;
+        font-size: 14px;
+        font-style: italic;
+      }
+
       #score-screen button {
-        background: #2196F3;
+        background: linear-gradient(180deg, #48bf6a, #2e9e54);
         color: white;
         border: none;
         padding: 12px 32px;
         font-size: 18px;
-        border-radius: 4px;
+        font-weight: 700;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
+        border-radius: 8px;
         cursor: pointer;
         margin-top: 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        box-shadow: 0 8px 20px rgba(18, 82, 44, 0.32);
+        transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), filter 0.18s ease, box-shadow 0.18s ease;
+        animation: btn-glow-pulse 2.5s ease-in-out infinite;
+        position: relative;
+        overflow: hidden;
+      }
+
+      #score-screen button::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 60%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+        transition: left 0.4s ease;
+        pointer-events: none;
+      }
+
+      #score-screen button:hover::after {
+        left: 120%;
       }
 
       #score-screen button:hover {
-        background: #0b7dda;
+        filter: brightness(1.08);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(18, 82, 44, 0.4), 0 0 16px rgba(72, 191, 106, 0.15);
+      }
+
+      #score-screen button:active {
+        transform: translateY(1px) scale(0.98);
+        filter: brightness(0.95);
+        box-shadow: 0 4px 12px rgba(18, 82, 44, 0.3);
+      }
+
+      #score-screen button:disabled {
+        background: linear-gradient(180deg, #546e7a, #455a64);
+        cursor: not-allowed;
+        animation: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      }
+
+      #score-screen button:disabled:hover {
+        filter: none;
+        transform: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
       }
 
       .hidden {
@@ -372,19 +787,23 @@
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.85);
+        background: linear-gradient(180deg, rgba(10, 20, 32, 0.95), rgba(5, 10, 17, 0.95));
         padding: 2.5rem;
-        border-radius: 10px;
+        border-radius: 14px;
         color: white;
         text-align: center;
         display: none;
         min-width: 450px;
         z-index: 10;
+        border: 1px solid rgba(127, 186, 219, 0.25);
+        box-shadow: 0 24px 55px rgba(0, 0, 0, 0.55), 0 0 30px rgba(56, 155, 210, 0.08);
+        backdrop-filter: blur(8px);
       }
 
       #instructions h2 {
         margin-bottom: 1rem;
         font-size: 1.8rem;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
       }
 
       #instructions .controls {
@@ -400,19 +819,27 @@
 
       #instructions .controls span {
         display: inline-block;
-        background: rgba(255,255,255,0.15);
+        background: rgba(56, 155, 210, 0.12);
+        border: 1px solid rgba(127, 186, 219, 0.2);
         padding: 2px 8px;
-        border-radius: 3px;
-        font-family: monospace;
+        border-radius: 5px;
+        font-family: 'Chakra Petch', monospace;
         margin-right: 8px;
         min-width: 80px;
         text-align: center;
+        font-size: 0.95rem;
       }
 
       #instructions .dismiss {
         margin-top: 1.5rem;
-        color: #aaa;
+        color: rgba(160, 190, 210, 0.6);
         font-size: 0.9rem;
+        animation: pulse-text 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse-text {
+        0%, 100% { opacity: 0.6; }
+        50% { opacity: 1; }
       }
 
       /* Disconnect overlay */
@@ -421,19 +848,23 @@
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
+        background: linear-gradient(180deg, rgba(15, 10, 12, 0.95), rgba(8, 5, 8, 0.95));
         padding: 2.5rem;
-        border-radius: 10px;
+        border-radius: 14px;
         color: white;
         text-align: center;
         display: none;
         min-width: 400px;
         z-index: 20;
+        border: 1px solid rgba(255, 80, 80, 0.2);
+        box-shadow: 0 24px 55px rgba(0, 0, 0, 0.55), 0 0 30px rgba(255, 60, 60, 0.06);
+        backdrop-filter: blur(8px);
       }
 
       #disconnect-overlay h2 {
-        color: #ff4444;
+        color: #ff5555;
         margin-bottom: 1rem;
+        text-shadow: 0 2px 10px rgba(255, 60, 60, 0.3);
       }
 
       #disconnect-overlay p {
@@ -442,17 +873,30 @@
       }
 
       #disconnect-return-btn {
-        background: #2196F3;
+        background: linear-gradient(180deg, #4a9fd8, #2d7ab8);
         color: white;
         border: none;
         padding: 12px 32px;
         font-size: 16px;
-        border-radius: 4px;
+        font-weight: 700;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
+        border-radius: 8px;
         cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        box-shadow: 0 8px 20px rgba(18, 55, 100, 0.32);
+        transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), filter 0.18s ease, box-shadow 0.18s ease;
       }
 
       #disconnect-return-btn:hover {
-        background: #0b7dda;
+        filter: brightness(1.08);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(18, 55, 100, 0.4), 0 0 16px rgba(74, 159, 216, 0.15);
+      }
+
+      #disconnect-return-btn:active {
+        transform: translateY(1px) scale(0.98);
+        filter: brightness(0.95);
       }
 
       /* Connection status */
@@ -467,6 +911,10 @@
         color: #aaa;
         text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
         pointer-events: none;
+      }
+
+      #connection-text {
+        color: #d7e3ea;
       }
 
       #connection-dot {
@@ -625,6 +1073,78 @@
         top: 50%;
         transform: translateY(-50%);
       }
+
+      #round-countdown {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        pointer-events: none;
+        z-index: 18;
+      }
+
+      @keyframes countdown-pop {
+        0% { transform: scale(1.3); opacity: 0; }
+        30% { transform: scale(1); opacity: 1; }
+        100% { transform: scale(0.95); opacity: 0.7; }
+      }
+
+      #round-countdown-value {
+        font-size: 96px;
+        font-weight: 700;
+        color: #ffffff;
+        text-shadow: 0 0 40px rgba(56, 155, 210, 0.4), 0 10px 28px rgba(0, 0, 0, 0.55);
+      }
+
+      #round-countdown-label {
+        margin-top: 6px;
+        font-size: 18px;
+        color: #dbe5eb;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+      }
+
+      #event-feed {
+        position: absolute;
+        left: 20px;
+        bottom: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+        z-index: 14;
+      }
+
+      .event-popup {
+        background: linear-gradient(135deg, rgba(10, 20, 32, 0.7), rgba(5, 10, 18, 0.75));
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: #eef7ff;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
+        transform: translateY(8px);
+        opacity: 0;
+        animation: event-pop 1.4s ease forwards;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+
+      .event-popup.good {
+        border-color: rgba(129, 199, 132, 0.6);
+      }
+
+      .event-popup.warn {
+        border-color: rgba(255, 183, 77, 0.65);
+      }
+
+      @keyframes event-pop {
+        0% { opacity: 0; transform: translateY(8px); }
+        15% { opacity: 1; transform: translateY(0); }
+        80% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(-6px); }
+      }
     </style>
   </head>
   <body>
@@ -633,17 +1153,60 @@
     <div id="ui-overlay">
       <!-- Lobby UI -->
       <div id="lobby">
+        <div id="lobby-particles">
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+          <div class="particle"></div>
+        </div>
         <div id="lobby-content">
           <div id="lobby-hero"></div>
           <div id="lobby-band">
-            <p class="subtitle">Web-based 3D chase game</p>
-            <div id="lobby-menu">
-              <div id="username-row">
-                <label for="username-input">Name</label>
-                <input type="text" id="username-input" maxlength="20" placeholder="arcade name" />
+            <div id="lobby-bottom-layout">
+              <!-- <p class="subtitle">Web-based 3D chase game</p> -->
+              <div id="play-panel">
+                <div id="lobby-menu">
+                  <div id="username-row">
+                    <label for="username-input">Name</label>
+                    <input type="text" id="username-input" maxlength="20" placeholder="arcade name" />
+                  </div>
+                  <div class="action-row">
+                    <button id="host-btn">Host Game</button>
+                    <button id="join-btn">Join Game</button>
+                  </div>
+                </div>
+
+                <div id="host-screen" class="hidden">
+                  <p>Share this link with your friend:</p>
+                  <div class="room-code-row">
+                    <div id="room-code"></div>
+                    <button id="copy-code-btn">Copy Code</button>
+                  </div>
+                  <input type="text" id="room-link" readonly />
+                  <button id="copy-link-btn">Copy Link</button>
+                  <input type="hidden" id="peer-id-display" />
+                  <p id="host-status" class="screen-status">Waiting for player to join...</p>
+                </div>
+
+                <div id="join-screen" class="hidden">
+                  <p>Input Username (optional):</p>
+                  <div class="username-row">
+                    <label for="join-username-input">Name</label>
+                    <input type="text" id="join-username-input" maxlength="20" placeholder="arcade name" />
+                  </div>
+                  <p>Enter room code:</p>
+                  <input type="text" id="peer-id-input" placeholder="e.g. HAWK42" style="text-transform: uppercase; letter-spacing: 2px; text-align: center;" />
+                  <div class="action-row">
+                    <button id="connect-btn">Connect</button>
+                    <button id="back-btn">Back</button>
+                  </div>
+                  <p id="join-status" class="screen-status">Input username (optional), then enter room code.</p>
+                </div>
               </div>
-              <button id="host-btn">Host Game</button>
-              <button id="join-btn">Join Game</button>
 
               <div id="leaderboard-panel">
                 <h3>Leaderboard</h3>
@@ -658,26 +1221,13 @@
                   </div>
                 </div>
                 <div id="leaderboard-status">Leaderboard unavailable</div>
+                <div id="personal-best-panel">
+                  <h4>Your Personal Bests</h4>
+                  <div id="personal-best-fat" class="best-line">Fattest pigeon: --</div>
+                  <div id="personal-best-kill" class="best-line">Fastest hawk kill: --</div>
+                  <div id="personal-best-badge">New Personal Best!</div>
+                </div>
               </div>
-            </div>
-
-            <div id="host-screen" class="hidden">
-              <p>Share this link with your friend:</p>
-              <div class="room-code-row">
-                <div id="room-code"></div>
-                <button id="copy-code-btn">Copy Code</button>
-              </div>
-              <input type="text" id="room-link" readonly />
-              <button id="copy-link-btn">Copy Link</button>
-              <input type="hidden" id="peer-id-display" />
-              <p style="margin-top: 16px; color: #aaa;">Waiting for player to join...</p>
-            </div>
-
-            <div id="join-screen" class="hidden">
-              <p>Enter room code:</p>
-              <input type="text" id="peer-id-input" placeholder="e.g. HAWK42" style="text-transform: uppercase; letter-spacing: 2px; text-align: center;" />
-              <button id="connect-btn">Connect</button>
-              <button id="back-btn">Back</button>
             </div>
           </div>
         </div>
@@ -688,7 +1238,6 @@
         <div class="stat" id="role-display">Role: -</div>
         <div class="stat" id="weight-display">
           Weight: <span id="weight-value">1.0</span>
-          <div class="bar-container"><div class="bar-fill bar-weight" id="weight-bar" style="width: 5%"></div></div>
         </div>
         <div class="stat" id="energy-display">
           Energy: <span id="energy-value">100</span>
@@ -702,7 +1251,8 @@
       <div id="score-screen">
         <h2 id="score-title">Round Over!</h2>
         <div id="score-details"></div>
-        <button id="next-round-btn">Next Round</button>
+        <div id="score-status">Round over. Ready for the next run.</div>
+        <button id="next-round-btn">Play Again</button>
       </div>
 
       <!-- Instructions Overlay -->
@@ -734,7 +1284,17 @@
       <!-- Connection Status -->
       <div id="connection-status">
         <span id="connection-dot"></span>
+        <span id="connection-text">Connecting...</span>
       </div>
+
+      <!-- Round Countdown -->
+      <div id="round-countdown">
+        <div id="round-countdown-value">3</div>
+        <div id="round-countdown-label">Get ready</div>
+      </div>
+
+      <!-- Event Feed -->
+      <div id="event-feed"></div>
 
       <!-- Debug Console -->
       <div id="debug-console"></div>

@@ -12,7 +12,7 @@ import { PeerConnection } from '../network/PeerConnection';
 import { NetworkManager } from '../network/NetworkManager';
 import { FoodCollectedMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
-import { ScoreUI } from '../ui/ScoreUI';
+import { RoundEndOptions, ScoreUI } from '../ui/ScoreUI';
 import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
 import { FoodSpawner } from '../world/FoodSpawner';
 import { Environment } from '../world/Environment';
@@ -23,6 +23,13 @@ import { NPCSpawner } from '../world/NPCSpawner';
 import { LeaderboardService } from '../services/LeaderboardService';
 import { AudioManager } from '../audio/AudioManager';
 import { SOUND_MANIFEST, SFX } from '../audio/SoundManifest';
+import {
+  PERSONAL_BESTS_STORAGE_KEY,
+  PersonalBests,
+  parsePersonalBests,
+  stringifyPersonalBests,
+  updatePersonalBest,
+} from '../ui/personalBests';
 
 /**
  * Main game orchestrator
@@ -51,11 +58,11 @@ export class Game {
 
   // Players
   private localPlayer: Player | null = null;
-  private remotePlayer: Player | null = null;
+  private remotePlayers: Map<string, Player> = new Map();
   private localPigeon: Pigeon | null = null;
   private localHawk: Hawk | null = null;
-  private remotePigeon: Pigeon | null = null;
-  private remoteHawk: Hawk | null = null;
+  private remotePigeons: Map<string, Pigeon> = new Map();
+  private remoteHawks: Map<string, Hawk> = new Map();
   private foodSpawner: FoodSpawner | null = null;
   private npcSpawner: NPCSpawner | null = null;
   private environment: Environment | null = null;
@@ -78,6 +85,11 @@ export class Game {
   private windLoopId: string | null = null;
   private wasHawkDiving: boolean = false;
   private nextPigeonPeerId: string | null = null;
+  private personalBests: PersonalBests;
+  private countdownIntervalId: number | null = null;
+  private countdownHideTimeoutId: number | null = null;
+  private countdownActive: boolean = false;
+  private readonly roundCountdownSeconds: number = 3;
 
   constructor() {
     // Get canvas
@@ -99,7 +111,10 @@ export class Game {
     this.lobbyUI = new LobbyUI();
     this.scoreUI = new ScoreUI();
     this.leaderboard = new LeaderboardService();
+    this.personalBests = this.loadPersonalBests();
     this.lobbyUI.show();
+    this.lobbyUI.renderPersonalBests(this.personalBests);
+    this.lobbyUI.showPersonalBestBadge(false);
     this.refreshLeaderboard();
 
     // Set up lobby callbacks
@@ -129,13 +144,11 @@ export class Game {
     AudioManager.init();
     this.setupVolumeControls();
 
-    // Check for room code in URL (auto-join)
+    // If room code is in URL, prefill join screen but let player confirm name first.
     const params = new URLSearchParams(window.location.search);
     const roomCode = params.get('room');
     if (roomCode) {
-      // Auto-join with the room code
-      this.lobbyUI.showConnecting();
-      this.joinGame(roomCode);
+      this.lobbyUI.prefillJoinRoomCode(roomCode.replace(/^birdgame-/i, '').toUpperCase());
     }
 
     // Start render loop (even before game starts)
@@ -213,12 +226,116 @@ export class Game {
       : { local: rightSpawn, remote: leftSpawn };
   }
 
+  private getRemoteSpawnPosition(index: number, totalRemotes: number): THREE.Vector3 {
+    const base = this.getSpawnPositions().remote.clone();
+    const spacing = 10;
+    const centeredIndex = index - ((Math.max(1, totalRemotes) - 1) / 2);
+    base.z += centeredIndex * spacing;
+    return base;
+  }
+
+  private getPlayerByPeerId(peerId: string): Player | null {
+    if (!this.gameState) return null;
+    if (peerId === this.gameState.localPeerId) {
+      return this.localPlayer;
+    }
+    return this.remotePlayers.get(peerId) ?? null;
+  }
+
+  private getPeerIdForPlayer(player: Player): string | null {
+    if (!this.gameState) return null;
+    if (this.localPlayer === player) return this.gameState.localPeerId;
+    for (const [peerId, remote] of this.remotePlayers) {
+      if (remote === player) return peerId;
+    }
+    return null;
+  }
+
+  private ensureRemotePlayer(
+    peerId: string,
+    role: PlayerRole,
+    position: THREE.Vector3,
+    yaw: number
+  ): Player {
+    const existing = this.remotePlayers.get(peerId);
+    if (existing) return existing;
+
+    const player = new Player(role, position.clone(), getModel(role));
+    player.rotation.y = yaw;
+    player.applyMeshRotation();
+    this.remotePlayers.set(peerId, player);
+    this.sceneManager.scene.add(player.mesh);
+    return player;
+  }
+
+  private removeRemotePlayer(peerId: string): void {
+    const player = this.remotePlayers.get(peerId);
+    if (!player) return;
+    this.sceneManager.scene.remove(player.mesh);
+    player.dispose();
+    this.remotePlayers.delete(peerId);
+    this.remotePigeons.delete(peerId);
+    this.remoteHawks.delete(peerId);
+  }
+
+  private syncRemotePlayersFromGameState(): void {
+    if (!this.gameState) return;
+
+    const expectedRemoteIds = new Set<string>();
+    let roleChanged = false;
+    this.gameState.players.forEach((playerState, peerId) => {
+      if (peerId === this.gameState!.localPeerId) return;
+      expectedRemoteIds.add(peerId);
+      const yaw = playerState.role === PlayerRole.PIGEON ? 0 : Math.PI;
+      const remotePlayer = this.ensureRemotePlayer(peerId, playerState.role, playerState.position, yaw);
+      if (remotePlayer.role !== playerState.role) {
+        remotePlayer.role = playerState.role;
+        this.swapPlayerModel(remotePlayer);
+        roleChanged = true;
+      }
+    });
+
+    for (const peerId of Array.from(this.remotePlayers.keys())) {
+      if (!expectedRemoteIds.has(peerId)) {
+        this.removeRemotePlayer(peerId);
+      }
+    }
+
+    if (roleChanged) {
+      this.syncRoleControllers();
+    }
+  }
+
+  private getCurrentPigeon(): { peerId: string; player: Player } | null {
+    if (!this.gameState) return null;
+    const pigeonState = Array.from(this.gameState.players.values())
+      .find((playerState) => playerState.role === PlayerRole.PIGEON);
+    if (!pigeonState) return null;
+    const player = this.getPlayerByPeerId(pigeonState.peerId);
+    if (!player) return null;
+    return { peerId: pigeonState.peerId, player };
+  }
+
+  private getHawkPlayers(): Array<{ peerId: string; player: Player }> {
+    if (!this.gameState) return [];
+    const hawks: Array<{ peerId: string; player: Player }> = [];
+    this.gameState.players.forEach((playerState, peerId) => {
+      if (playerState.role !== PlayerRole.HAWK) return;
+      const player = this.getPlayerByPeerId(peerId);
+      if (player) {
+        hawks.push({ peerId, player });
+      }
+    });
+    return hawks;
+  }
+
   /**
    * Host a new game
    */
   private async hostGame(): Promise<void> {
     try {
       this.lobbyUI.showWaiting('Initializing...');
+      this.lobbyUI.getEffectiveUsername();
 
       const roomCode = this.generateRoomCode();
 
@@ -236,12 +353,25 @@ export class Game {
       this.peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
-        if (!this.gameState.remotePeerId) {
-          this.gameState.remotePeerId = remotePeerId;
+        const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
+        this.lobbyUI.showWaiting(
+          connectedPeers === 1
+            ? '1 friend connected. Launching round...'
+            : `${connectedPeers} friends connected. New joiner ready.`
+        );
+        this.gameState.remotePeerId = remotePeerId;
+        if (this.isGameStarted) {
+          if (!this.gameState.players.has(remotePeerId)) {
+            const remoteCount = this.remotePlayers.size + 1;
+            const spawn = this.getRemoteSpawnPosition(this.remotePlayers.size, remoteCount);
+            const remoteState = this.gameState.addPlayer(remotePeerId, PlayerRole.HAWK, spawn);
+            remoteState.rotation.y = Math.PI;
+            this.ensureRemotePlayer(remotePeerId, PlayerRole.HAWK, spawn, Math.PI);
+            this.syncRoleControllers();
+          }
+          return;
         }
-        if (!this.isGameStarted) {
-          this.startGame();
-        }
+        this.startGame();
       });
 
       this.setupDisconnectHandlers();
@@ -258,6 +388,7 @@ export class Game {
    */
   private async joinGame(hostPeerId: string): Promise<void> {
     try {
+      this.lobbyUI.getEffectiveUsername();
       this.lobbyUI.showConnecting();
 
       // Normalize accepted inputs:
@@ -328,7 +459,6 @@ export class Game {
 
     // Assign roles (host = pigeon, client = hawk for now, will swap later)
     const localRole = this.gameState.isHost ? PlayerRole.PIGEON : PlayerRole.HAWK;
-    const remoteRole = this.gameState.isHost ? PlayerRole.HAWK : PlayerRole.PIGEON;
 
     // Build deterministic world from shared seed.
     this.worldSeed = this.getWorldSeedFromPeerIds();
@@ -341,23 +471,56 @@ export class Game {
 
     const spawn = this.getSpawnPositions();
     const localSpawnPos = spawn.local.clone();
-    const remoteSpawnPos = spawn.remote.clone();
+
+    // Clear any pre-existing runtime player instances.
+    for (const peerId of Array.from(this.remotePlayers.keys())) {
+      this.removeRemotePlayer(peerId);
+    }
+    this.remotePigeons.clear();
+    this.remoteHawks.clear();
 
     // Create local player
-    const localPlayerState = this.gameState.addPlayer(this.gameState.localPeerId, localRole, localSpawnPos);
+    const localPlayerState = this.gameState.players.get(this.gameState.localPeerId)
+      ?? this.gameState.addPlayer(this.gameState.localPeerId, localRole, localSpawnPos);
+    localPlayerState.role = localRole;
+    localPlayerState.position.copy(localSpawnPos);
     this.localPlayer = new Player(localRole, localSpawnPos, getModel(localRole));
     // Face toward center (host faces right, client faces left)
     this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
+    this.localPlayer.applyMeshRotation();
     localPlayerState.rotation.y = this.localPlayer.rotation.y;
     this.sceneManager.scene.add(this.localPlayer.mesh);
 
-    // Create remote player
-    const remotePlayerState = this.gameState.addPlayer(this.gameState.remotePeerId!, remoteRole, remoteSpawnPos);
-    this.remotePlayer = new Player(remoteRole, remoteSpawnPos, getModel(remoteRole));
-    // Face toward center (hawk faces left, pigeon faces right)
-    this.remotePlayer.rotation.y = this.gameState.isHost ? Math.PI : 0;
-    remotePlayerState.rotation.y = this.remotePlayer.rotation.y;
-    this.sceneManager.scene.add(this.remotePlayer.mesh);
+    if (this.gameState.isHost) {
+      const remotePeerIds = this.peerConnection.getRemotePeerIds().sort();
+      remotePeerIds.forEach((peerId, index) => {
+        const remoteSpawnPos = this.getRemoteSpawnPosition(index, remotePeerIds.length);
+        const state = this.gameState!.players.get(peerId)
+          ?? this.gameState!.addPlayer(peerId, PlayerRole.HAWK, remoteSpawnPos);
+        state.role = PlayerRole.HAWK;
+        state.position.copy(remoteSpawnPos);
+        state.rotation.set(0, Math.PI, 0);
+        state.velocity.set(0, 0, 0);
+        this.ensureRemotePlayer(peerId, PlayerRole.HAWK, remoteSpawnPos, Math.PI);
+      });
+
+      if (!this.gameState.remotePeerId && remotePeerIds.length > 0) {
+        this.gameState.remotePeerId = remotePeerIds[0];
+      }
+    } else if (this.gameState.remotePeerId) {
+      // Client immediately tracks the host as remote; additional clients are
+      // created lazily from host state snapshots.
+      const hostPeerId = this.gameState.remotePeerId;
+      const hostSpawnPos = spawn.remote.clone();
+      const state = this.gameState.players.get(hostPeerId)
+        ?? this.gameState.addPlayer(hostPeerId, PlayerRole.PIGEON, hostSpawnPos);
+      state.role = PlayerRole.PIGEON;
+      state.position.copy(hostSpawnPos);
+      state.rotation.set(0, 0, 0);
+      state.velocity.set(0, 0, 0);
+      this.ensureRemotePlayer(hostPeerId, PlayerRole.PIGEON, hostSpawnPos, 0);
+    }
+    this.syncRemotePlayersFromGameState();
 
     // Spawn food entities
     const foodRng = new SeededRandom((this.worldSeed ^ 0x9e3779b9) >>> 0);
@@ -418,9 +581,8 @@ export class Game {
       instructions.addEventListener('click', dismiss);
     }
 
-    // Start first round
+    // Start first round immediately for connection reliability.
     this.gameState.startRound();
-
     this.isGameStarted = true;
 
     // Start ambient sounds
@@ -480,7 +642,7 @@ export class Game {
   ): void {
     if (!this.localPlayer || !this.gameState || !this.leaderboard.isConfigured()) return;
 
-    const username = this.lobbyUI.getUsername();
+    const username = this.lobbyUI.getEffectiveUsername();
     const tasks: Promise<void>[] = [];
 
     if (this.localPlayer.role === PlayerRole.PIGEON) {
@@ -510,16 +672,73 @@ export class Game {
       .catch((error) => console.warn('Leaderboard submit failed:', error));
   }
 
+  private loadPersonalBests(): PersonalBests {
+    const raw = localStorage.getItem(PERSONAL_BESTS_STORAGE_KEY);
+    return parsePersonalBests(raw);
+  }
+
+  private savePersonalBests(): void {
+    localStorage.setItem(PERSONAL_BESTS_STORAGE_KEY, stringifyPersonalBests(this.personalBests));
+    this.lobbyUI.renderPersonalBests(this.personalBests);
+  }
+
+  private createRoundEndOptions(bestCallouts: string[]): RoundEndOptions {
+    const isHost = !!this.gameState?.isHost;
+    return {
+      canStartNextRound: isHost,
+      nextRoundLabel: isHost ? 'Play Again' : 'Waiting for host...',
+      statusText: isHost
+        ? 'Round Over -> Ready. Click Play Again to launch countdown.'
+        : 'Round Over. Waiting for host to launch next round.',
+      personalBestCallouts: bestCallouts,
+    };
+  }
+
+  private updatePersonalBestsForRound(
+    winner: 'pigeon' | 'hawk',
+    pigeonWeight: number,
+    survivalTime: number
+  ): string[] {
+    if (!this.localPlayer) return [];
+
+    const callouts: string[] = [];
+
+    if (this.localPlayer.role === PlayerRole.PIGEON) {
+      const update = updatePersonalBest(this.personalBests, 'fattest_pigeon', pigeonWeight);
+      if (update.isNewBest) {
+        this.personalBests = update.bests;
+        callouts.push('New Personal Best: Fattest pigeon!');
+      }
+    }
+
+    if (winner === 'hawk' && this.localPlayer.role === PlayerRole.HAWK) {
+      const update = updatePersonalBest(this.personalBests, 'fastest_hawk_kill', survivalTime);
+      if (update.isNewBest) {
+        this.personalBests = update.bests;
+        callouts.push('New Personal Best: Fastest hawk kill!');
+      }
+    }
+
+    this.lobbyUI.showPersonalBestBadge(callouts.length > 0);
+    if (callouts.length > 0) {
+      this.savePersonalBests();
+      this.showEventPopup('New Personal Best!', 'warn');
+    }
+
+    return callouts;
+  }
+
   /**
    * Update game state
    */
   private update(deltaTime: number): void {
     if (!this.gameState || !this.localPlayer) return;
 
-    this.applySurfaceSpeedModifier(this.localPlayer);
-
-    // Get input
-    const input = this.inputManager.getInputState();
+    // Get input (locked during countdown)
+    const rawInput = this.inputManager.getInputState();
+    const input = this.countdownActive
+      ? { ...rawInput, forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0 }
+      : rawInput;
 
     // Apply flight controls to local player
     this.flightController.applyInput(this.localPlayer, input, deltaTime);
@@ -544,8 +763,6 @@ export class Game {
       }
     }
 
-    this.applySurfaceSpeedModifier(this.localPlayer);
-
     // Authoritative stat simulation runs on host
     if (this.gameState.isHost) {
       this.updateRoleStats(this.localPlayer, deltaTime);
@@ -557,7 +774,9 @@ export class Game {
     if (this.npcSpawner) {
       if (this.gameState.isHost) {
         if (this.gameState.roundState === RoundState.PLAYING) {
-          const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK ? this.localPlayer : this.remotePlayer;
+          const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK
+            ? this.localPlayer
+            : (this.getHawkPlayers()[0]?.player ?? null);
           const buildingBounds = this.environment
             ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
             : [];
@@ -566,6 +785,8 @@ export class Game {
         this.syncNPCStateToGameState();
       } else {
         this.syncNPCStateFromGameState();
+        // Smoothly interpolate NPC visuals between network snapshots
+        this.npcSpawner.updateVisuals(deltaTime);
       }
     }
 
@@ -585,67 +806,72 @@ export class Game {
     // Network updates
     if (this.networkManager) {
       if (this.gameState.isHost) {
-        // Host: Apply remote player input if available
-        if (this.remotePlayer) {
-          const remoteInput = this.networkManager.getRemoteInput(this.gameState.remotePeerId!);
-          if (remoteInput) {
-            this.flightController.applyInput(this.remotePlayer, remoteInput, deltaTime);
+        // Host: Apply each remote player's input and simulate them authoritatively.
+        for (const [peerId, remotePlayer] of this.remotePlayers) {
+          const remoteInput = this.networkManager.getRemoteInput(peerId);
+          if (remoteInput && !this.countdownActive) {
+            this.flightController.applyInput(remotePlayer, remoteInput, deltaTime);
           }
-          this.remotePlayer.update(deltaTime);
+          remotePlayer.update(deltaTime);
 
-          // Check building collisions for remote player (host simulates remote)
           if (this.environment) {
             this.environment.checkAndResolveCollisions(
-              this.remotePlayer.position,
-              this.remotePlayer.radius,
-              this.remotePlayer.velocity
+              remotePlayer.position,
+              remotePlayer.radius,
+              remotePlayer.velocity
             );
-            if (this.remotePlayer.role === PlayerRole.HAWK) {
+            if (remotePlayer.role === PlayerRole.HAWK) {
               this.environment.applyHawkCanopySlow(
-                this.remotePlayer.position,
-                this.remotePlayer.radius,
-                this.remotePlayer.velocity,
+                remotePlayer.position,
+                remotePlayer.radius,
+                remotePlayer.velocity,
                 deltaTime
               );
             }
           }
 
-          this.applySurfaceSpeedModifier(this.remotePlayer);
-          this.updateRoleStats(this.remotePlayer, deltaTime);
+          this.updateRoleStats(remotePlayer, deltaTime);
 
-          // Sync remote player state to game state
-          const remotePlayerState = this.gameState.getRemotePlayer();
+          const remotePlayerState = this.gameState.players.get(peerId);
           if (remotePlayerState) {
-            remotePlayerState.position.copy(this.remotePlayer.position);
-            remotePlayerState.rotation.copy(this.remotePlayer.rotation);
-            remotePlayerState.velocity.copy(this.remotePlayer.velocity);
-            remotePlayerState.isEating = this.remotePlayer.isEating;
-            remotePlayerState.weight = this.getPlayerWeight(this.remotePlayer);
-            remotePlayerState.energy = this.getPlayerEnergy(this.remotePlayer);
+            remotePlayerState.position.copy(remotePlayer.position);
+            remotePlayerState.rotation.copy(remotePlayer.rotation);
+            remotePlayerState.velocity.copy(remotePlayer.velocity);
+            remotePlayerState.isEating = remotePlayer.isEating;
+            remotePlayerState.weight = this.getPlayerWeight(remotePlayer);
+            remotePlayerState.energy = this.getPlayerEnergy(remotePlayer);
           }
         }
 
         this.syncFoodStateToGameState();
 
-        // Send state sync to client
+        // Send state sync to all connected clients.
         this.networkManager.sendStateSync();
       } else {
         // Client: Send input to host
         this.networkManager.sendInputUpdate(input);
+        this.syncRemotePlayersFromGameState();
 
-        // Update remote player from game state
-        if (this.remotePlayer) {
-          const remotePlayerState = this.gameState.getRemotePlayer();
-          if (remotePlayerState) {
-            this.remotePlayer.position.copy(remotePlayerState.position);
-            this.remotePlayer.rotation.copy(remotePlayerState.rotation);
-            this.remotePlayer.velocity.copy(remotePlayerState.velocity);
-            this.remotePlayer.isEating = !!remotePlayerState.isEating;
-
-            // Apply host-authoritative transform directly on client.
-            this.remotePlayer.mesh.position.copy(this.remotePlayer.position);
-            this.remotePlayer.applyMeshRotation();
+        // Update all remote players from host-authoritative state.
+        for (const [peerId, remotePlayer] of this.remotePlayers) {
+          const remotePlayerState = this.gameState.players.get(peerId);
+          const interpolated = this.networkManager.getInterpolatedRemoteState(peerId);
+          if (interpolated) {
+            remotePlayer.position.copy(interpolated.position);
+            remotePlayer.rotation.copy(interpolated.rotation);
+            remotePlayer.velocity.copy(interpolated.velocity);
+            remotePlayer.isEating = interpolated.isEating;
+          } else if (remotePlayerState) {
+            remotePlayer.position.copy(remotePlayerState.position);
+            remotePlayer.rotation.copy(remotePlayerState.rotation);
+            remotePlayer.velocity.copy(remotePlayerState.velocity);
+            remotePlayer.isEating = !!remotePlayerState.isEating;
+          } else {
+            continue;
           }
+
+          remotePlayer.mesh.position.copy(remotePlayer.position);
+          remotePlayer.applyMeshRotation();
         }
 
         this.syncVisualStatsFromGameState();
@@ -695,8 +921,6 @@ export class Game {
         const weight = this.getPlayerWeight(this.localPlayer);
         const weightValue = document.getElementById('weight-value');
         if (weightValue) weightValue.textContent = weight.toFixed(1);
-        const weightBar = document.getElementById('weight-bar');
-        if (weightBar) weightBar.style.width = `${Math.min(100, (weight / 20) * 100)}%`;
       }
     }
 
@@ -714,10 +938,14 @@ export class Game {
 
     const timerDisplay = document.getElementById('timer-display');
     if (timerDisplay && this.gameState) {
-      const remaining = Math.max(0, Math.floor(this.gameState.getRemainingTime()));
-      const minutes = Math.floor(remaining / 60);
-      const seconds = remaining % 60;
-      timerDisplay.textContent = `Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+      if (this.countdownActive) {
+        timerDisplay.textContent = 'Time: Starting...';
+      } else {
+        const remaining = Math.max(0, Math.floor(this.gameState.getRemainingTime()));
+        const minutes = Math.floor(remaining / 60);
+        const seconds = remaining % 60;
+        timerDisplay.textContent = `Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+      }
     }
 
     const eatingIndicator = document.getElementById('eating-indicator');
@@ -757,6 +985,19 @@ export class Game {
         connectionDot.style.background = '#ff4444';
       }
     }
+    const connectionText = document.getElementById('connection-text');
+    if (connectionText && this.peerConnection && this.gameState) {
+      if (this.gameState.isHost) {
+        const connectedPeers = this.peerConnection.getRemotePeerIds().length;
+        connectionText.textContent = connectedPeers > 0
+          ? `Host live: ${connectedPeers} friend${connectedPeers === 1 ? '' : 's'} connected`
+          : 'Host live: waiting for friends';
+      } else {
+        connectionText.textContent = this.peerConnection.isConnected()
+          ? 'Connected to host'
+          : (this.peerConnection.getIsReconnecting() ? 'Reconnecting...' : 'Disconnected');
+      }
+    }
 
     this.updateDebugConsole();
   }
@@ -773,13 +1014,16 @@ export class Game {
     this.lastDebugRefreshTime = now;
 
     const localState = this.gameState.getLocalPlayer();
-    const remoteState = this.gameState.getRemotePlayer();
     const localError = localState
       ? localState.position.distanceTo(this.localPlayer.position)
       : 0;
-    const remoteError = this.remotePlayer && remoteState
-      ? remoteState.position.distanceTo(this.remotePlayer.position)
-      : 0;
+    const remoteErrors = Array.from(this.remotePlayers.entries())
+      .map(([peerId, remotePlayer]) => {
+        const remoteState = this.gameState!.players.get(peerId);
+        if (!remoteState) return 0;
+        return remoteState.position.distanceTo(remotePlayer.position);
+      });
+    const maxRemoteError = remoteErrors.length > 0 ? Math.max(...remoteErrors) : 0;
 
     let foodMismatch = 0;
     let missingLocalFood = 0;
@@ -819,10 +1063,8 @@ export class Game {
       `Conn: ${connectionState}`,
       `Round: ${this.gameState.roundNumber} ${this.gameState.roundState}`,
       `Local ${this.localPlayer.role} p:${this.formatVec3(this.localPlayer.position)} v:${this.localPlayer.velocity.length().toFixed(2)}`,
-      this.remotePlayer
-        ? `Remote ${this.remotePlayer.role} p:${this.formatVec3(this.remotePlayer.position)} v:${this.remotePlayer.velocity.length().toFixed(2)}`
-        : 'Remote: n/a',
-      `PosErr L:${localError.toFixed(2)} R:${remoteError.toFixed(2)}`,
+      `Remotes: ${this.remotePlayers.size}`,
+      `PosErr L:${localError.toFixed(2)} Rmax:${maxRemoteError.toFixed(2)}`,
       `Food local:${this.foodSpawner?.getFoods().length ?? 0} state:${this.gameState.foods.size}`,
       `Food mismatch:${foodMismatch} missing:${missingLocalFood} orphan:${orphanLocalFood}`,
       `NPC local:${this.npcSpawner?.getNPCs().length ?? 0} state:${this.gameState.npcs.size}`,
@@ -844,22 +1086,26 @@ export class Game {
    * Check for collisions (host only)
    */
   private checkCollisions(): void {
-    if (!this.localPlayer || !this.remotePlayer || !this.gameState) return;
+    if (!this.localPlayer || !this.gameState) return;
 
-    // Check player vs player collision
-    const collision = this.collisionDetector.checkPlayerCollision(
-      this.localPlayer,
-      this.remotePlayer
-    );
-
-    if (collision) {
-      this.endRound();
+    const pigeon = this.getCurrentPigeon();
+    if (pigeon) {
+      for (const hawk of this.getHawkPlayers()) {
+        const collision = this.collisionDetector.checkPlayerCollision(
+          pigeon.player,
+          hawk.player
+        );
+        if (collision) {
+          this.endRound(hawk.peerId, pigeon.peerId);
+          return;
+        }
+      }
     }
 
     if (this.foodSpawner) {
       this.checkFoodCollision(this.localPlayer, this.gameState.localPeerId);
-      if (this.gameState.remotePeerId) {
-        this.checkFoodCollision(this.remotePlayer, this.gameState.remotePeerId);
+      for (const [peerId, remotePlayer] of this.remotePlayers) {
+        this.checkFoodCollision(remotePlayer, peerId);
       }
     }
 
@@ -867,8 +1113,10 @@ export class Game {
       if (this.localPlayer.role === PlayerRole.HAWK) {
         this.checkNPCCollision(this.localPlayer, this.gameState.localPeerId);
       }
-      if (this.gameState.remotePeerId && this.remotePlayer.role === PlayerRole.HAWK) {
-        this.checkNPCCollision(this.remotePlayer, this.gameState.remotePeerId);
+      for (const [peerId, remotePlayer] of this.remotePlayers) {
+        if (remotePlayer.role === PlayerRole.HAWK) {
+          this.checkNPCCollision(remotePlayer, peerId);
+        }
       }
     }
   }
@@ -876,13 +1124,11 @@ export class Game {
   /**
    * End the current round
    */
-  private endRound(): void {
+  private endRound(killerPeerId: string, victimPeerId: string): void {
     if (!this.gameState) return;
 
-    // Calculate scores
-    const pigeonPlayer = this.localPlayer!.role === PlayerRole.PIGEON
-      ? this.localPlayer!
-      : this.remotePlayer!;
+    const pigeonPlayer = this.getPlayerByPeerId(victimPeerId);
+    if (!pigeonPlayer) return;
 
     const pigeonWeight = this.getPlayerWeight(pigeonPlayer);
     const survivalTime = this.gameState.getRoundTime();
@@ -893,25 +1139,14 @@ export class Game {
     this.gameState.scores.hawk.killTimes.push(survivalTime);
 
     // End the round
-    const survivingPigeon = this.localPlayer!.role === PlayerRole.PIGEON
-      ? this.gameState.localPeerId
-      : this.gameState.remotePeerId;
-    this.nextPigeonPeerId = survivingPigeon ?? this.gameState.localPeerId;
+    this.nextPigeonPeerId = killerPeerId;
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
 
-    // Send death event to client (host only)
+    // Send death event to clients (host only)
     if (this.gameState.isHost && this.networkManager) {
-      const victimId = pigeonPlayer === this.localPlayer
-        ? this.gameState.localPeerId
-        : this.gameState.remotePeerId!;
-      const killerId = pigeonPlayer === this.localPlayer
-        ? this.gameState.remotePeerId!
-        : this.gameState.localPeerId;
-      this.nextPigeonPeerId = killerId;
-
-      this.networkManager.sendPlayerDeath(victimId, killerId, pigeonWeight, survivalTime);
+      this.networkManager.sendPlayerDeath(victimPeerId, killerPeerId, pigeonWeight, survivalTime);
     }
 
     // Play hawk catch sounds
@@ -919,12 +1154,14 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
@@ -938,11 +1175,10 @@ export class Game {
   private endRoundPigeonSurvived(): void {
     if (!this.gameState) return;
 
-    const pigeonPlayer = this.localPlayer!.role === PlayerRole.PIGEON
-      ? this.localPlayer!
-      : this.remotePlayer!;
+    const pigeon = this.getCurrentPigeon();
+    if (!pigeon) return;
 
-    const pigeonWeight = this.getPlayerWeight(pigeonPlayer);
+    const pigeonWeight = this.getPlayerWeight(pigeon.player);
     const survivalTime = this.gameState.roundDuration;
 
     // Update cumulative scores
@@ -950,9 +1186,7 @@ export class Game {
     this.gameState.scores.pigeon.roundsWon += 1;
 
     // End the round
-    this.nextPigeonPeerId = this.localPlayer!.role === PlayerRole.PIGEON
-      ? this.gameState.localPeerId
-      : (this.gameState.remotePeerId ?? this.gameState.localPeerId);
+    this.nextPigeonPeerId = pigeon.peerId;
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
@@ -966,12 +1200,14 @@ export class Game {
     AudioManager.play(SFX.PIGEON_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('pigeon', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'pigeon',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('pigeon', pigeonWeight, survivalTime);
 
@@ -1008,12 +1244,14 @@ export class Game {
       AudioManager.play(SFX.PIGEON_WINS, 'sfx');
     }
 
+    const bestCallouts = this.updatePersonalBestsForRound(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       winner === 'pigeon' ? 'pigeon' : 'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
 
@@ -1021,11 +1259,10 @@ export class Game {
   }
 
   /**
-   * Start next round with role swap
-   * Called by host when "Next Round" is clicked, or by client when ROUND_START message received
+   * Start next round flow (host only).
    */
   private startNextRound(): void {
-    if (!this.gameState || !this.localPlayer || !this.remotePlayer) return;
+    if (!this.gameState || !this.localPlayer) return;
 
     // Only host should execute this directly from UI
     // Client waits for ROUND_START message
@@ -1043,45 +1280,15 @@ export class Game {
     this.gameState.assignRolesForNextRound(nextPigeonPeerId);
     this.nextPigeonPeerId = null;
 
-    // Update player roles
-    const localPlayerState = this.gameState.getLocalPlayer();
-    const remotePlayerState = this.gameState.getRemotePlayer();
+    this.syncRemotePlayersFromGameState();
+    this.gameState.players.forEach((playerState, peerId) => {
+      const player = this.getPlayerByPeerId(peerId);
+      if (!player) return;
+      player.role = playerState.role;
+      this.swapPlayerModel(player);
+    });
 
-    if (localPlayerState && remotePlayerState) {
-      this.localPlayer.role = localPlayerState.role;
-      this.remotePlayer.role = remotePlayerState.role;
-
-      // Swap bird models for new roles
-      this.swapPlayerModel(this.localPlayer);
-      this.swapPlayerModel(this.remotePlayer);
-
-      // Reset positions
-      const spawn = this.getSpawnPositions();
-      this.localPlayer.position.copy(spawn.local);
-      this.remotePlayer.position.copy(spawn.remote);
-
-      // Reset rotations (including bank angle)
-      this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
-      this.localPlayer.rotation.z = 0;
-      this.localPlayer.bankVelocity = 0;
-      this.remotePlayer.rotation.y = this.gameState.isHost ? Math.PI : 0;
-      this.remotePlayer.rotation.z = 0;
-      this.remotePlayer.bankVelocity = 0;
-
-      // Reset velocities
-      this.localPlayer.velocity.set(0, 0, 0);
-      this.remotePlayer.velocity.set(0, 0, 0);
-
-      // Keep authoritative game state aligned before broadcasting ROUND_START.
-      localPlayerState.position.copy(this.localPlayer.position);
-      localPlayerState.rotation.copy(this.localPlayer.rotation);
-      localPlayerState.velocity.copy(this.localPlayer.velocity);
-      localPlayerState.isEating = false;
-      remotePlayerState.position.copy(this.remotePlayer.position);
-      remotePlayerState.rotation.copy(this.remotePlayer.rotation);
-      remotePlayerState.velocity.copy(this.remotePlayer.velocity);
-      remotePlayerState.isEating = false;
-    }
+    const spawnStates = this.buildSpawnStateForAllPlayers();
 
     this.syncRoleControllers();
     this.resetRoleStats();
@@ -1096,111 +1303,143 @@ export class Game {
       this.syncNPCStateToGameState();
     }
 
-    // Start new round
-    this.gameState.startRound();
+    this.launchRoundCountdown(spawnStates);
+  }
 
-    // Send round start to client (host only)
+  private launchRoundCountdown(spawnStates: RoundStartMessage['spawnStates']): void {
+    if (!this.gameState) return;
+
+    const nextRoundNumber = this.gameState.roundNumber + 1;
+    const roundStartAt = Date.now() + (this.roundCountdownSeconds * 1000);
+    const roles: { [peerId: string]: PlayerRole } = {};
+
+    this.gameState.players.forEach((playerState, peerId) => {
+      roles[peerId] = playerState.role;
+    });
+
     if (this.networkManager) {
-      const spawnStates = {
-        [this.gameState.localPeerId]: {
-          position: {
-            x: localPlayerState!.position.x,
-            y: localPlayerState!.position.y,
-            z: localPlayerState!.position.z,
-          },
-          rotation: {
-            x: localPlayerState!.rotation.x,
-            y: localPlayerState!.rotation.y,
-            z: localPlayerState!.rotation.z,
-          },
-          velocity: {
-            x: localPlayerState!.velocity.x,
-            y: localPlayerState!.velocity.y,
-            z: localPlayerState!.velocity.z,
-          },
-        },
-        [this.gameState.remotePeerId!]: {
-          position: {
-            x: remotePlayerState!.position.x,
-            y: remotePlayerState!.position.y,
-            z: remotePlayerState!.position.z,
-          },
-          rotation: {
-            x: remotePlayerState!.rotation.x,
-            y: remotePlayerState!.rotation.y,
-            z: remotePlayerState!.rotation.z,
-          },
-          velocity: {
-            x: remotePlayerState!.velocity.x,
-            y: remotePlayerState!.velocity.y,
-            z: remotePlayerState!.velocity.z,
-          },
-        },
-      };
-
       this.networkManager.sendRoundStart(
-        this.gameState.roundNumber,
-        {
-          [this.gameState.localPeerId]: localPlayerState!.role,
-          [this.gameState.remotePeerId!]: remotePlayerState!.role,
-        },
+        nextRoundNumber,
+        roundStartAt,
+        this.roundCountdownSeconds,
+        roles,
         spawnStates
       );
     }
 
+    this.runRoundCountdown(nextRoundNumber, roundStartAt, this.roundCountdownSeconds);
+  }
+
+  private runRoundCountdown(roundNumber: number, roundStartAt: number, countdownSeconds: number): void {
+    this.clearRoundCountdownState();
+    this.lobbyUI.showPersonalBestBadge(false);
+    this.countdownActive = true;
+    this.inputManager.resetInputState();
+    this.networkManager?.resetRemoteInput();
+
+    const overlay = document.getElementById('round-countdown');
+    const valueEl = document.getElementById('round-countdown-value');
+    const labelEl = document.getElementById('round-countdown-label');
+
+    if (overlay) overlay.style.display = 'flex';
+    if (labelEl) labelEl.textContent = 'Get ready';
+
+    let started = false;
+    const tick = () => {
+      const msRemaining = roundStartAt - Date.now();
+      if (msRemaining <= 0) {
+        if (!started) {
+          started = true;
+          if (valueEl) valueEl.textContent = 'GO';
+          if (labelEl) labelEl.textContent = 'Round live';
+          this.finishRoundCountdown(roundNumber);
+        }
+        return;
+      }
+
+      const secondsLeft = Math.min(countdownSeconds, Math.max(1, Math.ceil(msRemaining / 1000)));
+      if (valueEl) valueEl.textContent = `${secondsLeft}`;
+      if (labelEl) labelEl.textContent = 'Get ready';
+    };
+
+    tick();
+    this.countdownIntervalId = window.setInterval(tick, 100);
+  }
+
+  private finishRoundCountdown(roundNumber: number): void {
+    if (!this.gameState) return;
+
+    if (this.countdownIntervalId !== null) {
+      window.clearInterval(this.countdownIntervalId);
+      this.countdownIntervalId = null;
+    }
+
+    this.gameState.roundNumber = Math.max(0, roundNumber - 1);
+    this.gameState.startRound();
+    this.countdownActive = false;
     AudioManager.play(SFX.ROUND_START, 'sfx');
+
+    this.countdownHideTimeoutId = window.setTimeout(() => {
+      const overlay = document.getElementById('round-countdown');
+      if (overlay) overlay.style.display = 'none';
+      const valueEl = document.getElementById('round-countdown-value');
+      if (valueEl) valueEl.textContent = `${this.roundCountdownSeconds}`;
+      const labelEl = document.getElementById('round-countdown-label');
+      if (labelEl) labelEl.textContent = 'Get ready';
+      this.countdownHideTimeoutId = null;
+    }, 450);
+  }
+
+  private clearRoundCountdownState(): void {
+    if (this.countdownIntervalId !== null) {
+      window.clearInterval(this.countdownIntervalId);
+      this.countdownIntervalId = null;
+    }
+    if (this.countdownHideTimeoutId !== null) {
+      window.clearTimeout(this.countdownHideTimeoutId);
+      this.countdownHideTimeoutId = null;
+    }
+    const overlay = document.getElementById('round-countdown');
+    if (overlay) overlay.style.display = 'none';
+    this.countdownActive = false;
   }
 
   /**
    * Configure role stat controllers after role changes.
    */
   private syncRoleControllers(): void {
-    if (!this.localPlayer || !this.remotePlayer) return;
+    if (!this.localPlayer) return;
 
     // Clear role-specific visual/physics leftovers before re-attaching controllers.
     this.localPlayer.setVisualScale(1);
-    this.remotePlayer.setVisualScale(1);
     this.localPlayer.speedMultiplier = 1;
-    this.remotePlayer.speedMultiplier = 1;
-    this.localPlayer.terrainSpeedMultiplier = 1;
-    this.remotePlayer.terrainSpeedMultiplier = 1;
+    this.remotePigeons.clear();
+    this.remoteHawks.clear();
+    for (const remotePlayer of this.remotePlayers.values()) {
+      remotePlayer.setVisualScale(1);
+      remotePlayer.speedMultiplier = 1;
+    }
 
     this.localPigeon = this.localPlayer.role === PlayerRole.PIGEON ? new Pigeon(this.localPlayer) : null;
     this.localHawk = this.localPlayer.role === PlayerRole.HAWK ? new Hawk(this.localPlayer) : null;
-    this.remotePigeon = this.remotePlayer.role === PlayerRole.PIGEON ? new Pigeon(this.remotePlayer) : null;
-    this.remoteHawk = this.remotePlayer.role === PlayerRole.HAWK ? new Hawk(this.remotePlayer) : null;
-  }
-
-  /**
-   * Apply terrain speed penalties when player is touching ground or rooftops.
-   */
-  private applySurfaceSpeedModifier(player: Player): void {
-    if (!this.environment) {
-      player.terrainSpeedMultiplier = 1;
-      return;
+    for (const [peerId, remotePlayer] of this.remotePlayers) {
+      if (remotePlayer.role === PlayerRole.PIGEON) {
+        this.remotePigeons.set(peerId, new Pigeon(remotePlayer));
+      } else {
+        this.remoteHawks.set(peerId, new Hawk(remotePlayer));
+      }
     }
-
-    const onWalkableSurface = this.environment.isOnWalkableSurface(player.position, player.radius);
-    player.terrainSpeedMultiplier = onWalkableSurface
-      ? GAME_CONFIG.SURFACE_WALK_SPEED_MULTIPLIER
-      : 1;
-
-    if (!onWalkableSurface) return;
-
-    const maxWalkSpeed = player.getBaseSpeed() * player.speedMultiplier * GAME_CONFIG.SURFACE_WALK_SPEED_MULTIPLIER;
-    const horizontalSpeed = Math.hypot(player.velocity.x, player.velocity.z);
-    if (horizontalSpeed <= maxWalkSpeed || horizontalSpeed <= 0.0001) return;
-
-    const clampRatio = maxWalkSpeed / horizontalSpeed;
-    player.velocity.x *= clampRatio;
-    player.velocity.z *= clampRatio;
   }
 
   /**
    * Update per-role stats on host.
    */
   private updateRoleStats(player: Player, deltaTime: number): void {
-    const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+    const peerId = this.getPeerIdForPlayer(player);
+    if (!peerId || !this.gameState) return;
+    const hawk = peerId === this.gameState.localPeerId
+      ? this.localHawk
+      : (this.remoteHawks.get(peerId) ?? null);
     if (hawk) {
       hawk.update(deltaTime);
     }
@@ -1212,8 +1451,8 @@ export class Game {
   private resetRoleStats(): void {
     this.localPigeon?.reset();
     this.localHawk?.reset();
-    this.remotePigeon?.reset();
-    this.remoteHawk?.reset();
+    this.remotePigeons.forEach((pigeon) => pigeon.reset());
+    this.remoteHawks.forEach((hawk) => hawk.reset());
   }
 
   /**
@@ -1245,6 +1484,7 @@ export class Game {
       // Play eating sound (host plays for local player only; client plays via handleFoodCollected)
       if (player === this.localPlayer) {
         this.playEatSound(food.type);
+        this.showFoodPopup(food.type, food.weightGain, food.energyGain);
       }
     });
   }
@@ -1272,7 +1512,10 @@ export class Game {
 
       player.startEating(killed.getEatTime());
 
-      const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+      const peerId = this.getPeerIdForPlayer(player);
+      const hawk = !peerId || !this.gameState
+        ? null
+        : (peerId === this.gameState.localPeerId ? this.localHawk : (this.remoteHawks.get(peerId) ?? null));
       hawk?.addEnergy(killed.getEnergyReward());
 
       this.syncNPCStateToGameState();
@@ -1287,6 +1530,7 @@ export class Game {
       // Play kill sound for local hawk
       if (player === this.localPlayer) {
         AudioManager.play(SFX.NPC_KILL, 'sfx');
+        this.showEventPopup(`NPC caught +${killed.getEnergyReward().toFixed(0)} energy`, 'good');
       }
       break;
     }
@@ -1296,14 +1540,21 @@ export class Game {
    * Apply food effects to the role controller.
    */
   private applyFoodEffect(player: Player, foodType: FoodType, weightGain: number, energyGain: number): void {
+    const peerId = this.getPeerIdForPlayer(player);
+    if (!peerId || !this.gameState) return;
+
     if (player.role === PlayerRole.PIGEON && foodType !== FoodType.RAT) {
-      const pigeon = player === this.localPlayer ? this.localPigeon : this.remotePigeon;
+      const pigeon = peerId === this.gameState.localPeerId
+        ? this.localPigeon
+        : (this.remotePigeons.get(peerId) ?? null);
       pigeon?.addWeight(weightGain);
       return;
     }
 
     if (player.role === PlayerRole.HAWK && foodType === FoodType.RAT) {
-      const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+      const hawk = peerId === this.gameState.localPeerId
+        ? this.localHawk
+        : (this.remoteHawks.get(peerId) ?? null);
       hawk?.addEnergy(energyGain);
     }
   }
@@ -1403,48 +1654,127 @@ export class Game {
    * Copy weight/energy values from game state to local controllers.
    */
   private syncVisualStatsFromGameState(): void {
-    if (!this.gameState || !this.localPlayer || !this.remotePlayer) return;
+    if (!this.gameState || !this.localPlayer) return;
 
-    const localState = this.gameState.getLocalPlayer();
-    const remoteState = this.gameState.getRemotePlayer();
+    this.gameState.players.forEach((playerState, peerId) => {
+      const player = this.getPlayerByPeerId(peerId);
+      if (!player) return;
 
-    if (localState) {
-      if (localState.weight !== undefined) {
-        this.setPlayerWeight(this.localPlayer, localState.weight);
+      if (playerState.weight !== undefined) {
+        this.setPlayerWeight(player, playerState.weight);
       }
-      if (localState.energy !== undefined) {
-        this.setPlayerEnergy(this.localPlayer, localState.energy);
+      if (playerState.energy !== undefined) {
+        this.setPlayerEnergy(player, playerState.energy);
       }
-    }
+    });
+  }
 
-    if (remoteState) {
-      if (remoteState.weight !== undefined) {
-        this.setPlayerWeight(this.remotePlayer, remoteState.weight);
-      }
-      if (remoteState.energy !== undefined) {
-        this.setPlayerEnergy(this.remotePlayer, remoteState.energy);
-      }
-    }
+  private getPigeonController(player: Player): Pigeon | null {
+    if (!this.gameState) return null;
+    const peerId = this.getPeerIdForPlayer(player);
+    if (!peerId) return null;
+    return peerId === this.gameState.localPeerId
+      ? this.localPigeon
+      : (this.remotePigeons.get(peerId) ?? null);
+  }
+
+  private getHawkController(player: Player): Hawk | null {
+    if (!this.gameState) return null;
+    const peerId = this.getPeerIdForPlayer(player);
+    if (!peerId) return null;
+    return peerId === this.gameState.localPeerId
+      ? this.localHawk
+      : (this.remoteHawks.get(peerId) ?? null);
   }
 
   private setPlayerWeight(player: Player, weight: number): void {
-    const pigeon = player === this.localPlayer ? this.localPigeon : this.remotePigeon;
+    const pigeon = this.getPigeonController(player);
     pigeon?.setWeight(weight);
   }
 
   private setPlayerEnergy(player: Player, energy: number): void {
-    const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+    const hawk = this.getHawkController(player);
     hawk?.setEnergy(energy);
   }
 
   private getPlayerWeight(player: Player): number {
-    const pigeon = player === this.localPlayer ? this.localPigeon : this.remotePigeon;
+    const pigeon = this.getPigeonController(player);
     return pigeon ? pigeon.getWeight() : 1;
   }
 
   private getPlayerEnergy(player: Player): number {
-    const hawk = player === this.localPlayer ? this.localHawk : this.remoteHawk;
+    const hawk = this.getHawkController(player);
     return hawk ? hawk.getEnergy() : 0;
+  }
+
+  private buildSpawnStateForAllPlayers(): {
+    [peerId: string]: {
+      position: { x: number; y: number; z: number };
+      rotation: { x: number; y: number; z: number };
+      velocity: { x: number; y: number; z: number };
+    };
+  } {
+    if (!this.gameState) return {};
+
+    const spawnStates: {
+      [peerId: string]: {
+        position: { x: number; y: number; z: number };
+        rotation: { x: number; y: number; z: number };
+        velocity: { x: number; y: number; z: number };
+      };
+    } = {};
+
+    const pigeonPeerId = Array.from(this.gameState.players.values())
+      .find((playerState) => playerState.role === PlayerRole.PIGEON)?.peerId
+      ?? this.gameState.localPeerId;
+    const hawkIds = Array.from(this.gameState.players.keys())
+      .filter((peerId) => peerId !== pigeonPeerId)
+      .sort();
+
+    const pigeonSpawn = this.getSpawnPositions().local.clone();
+
+    this.gameState.players.forEach((playerState, peerId) => {
+      const player = this.getPlayerByPeerId(peerId);
+      if (!player) return;
+
+      const isPigeon = peerId === pigeonPeerId;
+      const spawnPos = isPigeon
+        ? pigeonSpawn
+        : this.getRemoteSpawnPosition(Math.max(0, hawkIds.indexOf(peerId)), Math.max(1, hawkIds.length));
+
+      player.position.copy(spawnPos);
+      player.rotation.set(0, isPigeon ? 0 : Math.PI, 0);
+      player.velocity.set(0, 0, 0);
+      player.bankVelocity = 0;
+      player.isEating = false;
+      player.mesh.position.copy(player.position);
+      player.applyMeshRotation();
+
+      playerState.position.copy(player.position);
+      playerState.rotation.copy(player.rotation);
+      playerState.velocity.copy(player.velocity);
+      playerState.isEating = false;
+
+      spawnStates[peerId] = {
+        position: {
+          x: playerState.position.x,
+          y: playerState.position.y,
+          z: playerState.position.z,
+        },
+        rotation: {
+          x: playerState.rotation.x,
+          y: playerState.rotation.y,
+          z: playerState.rotation.z,
+        },
+        velocity: {
+          x: playerState.velocity.x,
+          y: playerState.velocity.y,
+          z: playerState.velocity.z,
+        },
+      };
+    });
+
+    return spawnStates;
   }
 
   /**
@@ -1497,6 +1827,7 @@ export class Game {
     if (model) {
       player.swapModel(model);
     }
+    player.updateCollisionShape();
   }
 
   /**
@@ -1525,12 +1856,14 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
       pigeonWeight,
       survivalTime,
       this.gameState.scores.pigeon,
-      this.gameState.scores.hawk
+      this.gameState.scores.hawk,
+      this.createRoundEndOptions(bestCallouts)
     );
     this.submitLocalLeaderboardResult('hawk', pigeonWeight, survivalTime);
 
@@ -1550,8 +1883,8 @@ export class Game {
 
     this.foodSpawner.setFoodState(message.foodId, message.exists, message.respawnTimer);
 
+    const collector = this.getPlayerByPeerId(message.playerId);
     const isLocalCollector = message.playerId === this.gameState.localPeerId;
-    const collector = isLocalCollector ? this.localPlayer : this.remotePlayer;
     if (!collector) return;
 
     collector.startEating(food.eatTime);
@@ -1560,6 +1893,7 @@ export class Game {
     // Play eating sound for local player pickup
     if (isLocalCollector) {
       this.playEatSound(food.type);
+      this.showFoodPopup(food.type, food.weightGain, food.energyGain);
     }
   }
 
@@ -1576,17 +1910,18 @@ export class Game {
     }
 
     const isLocalCollector = message.playerId === this.gameState.localPeerId;
-    const collector = isLocalCollector ? this.localPlayer : this.remotePlayer;
+    const collector = this.getPlayerByPeerId(message.playerId);
     if (!collector || collector.role !== PlayerRole.HAWK) return;
 
     collector.startEating(this.getNPCEatTime(message.npcType));
 
-    const hawk = collector === this.localPlayer ? this.localHawk : this.remoteHawk;
+    const hawk = this.getHawkController(collector);
     hawk?.addEnergy(this.getNPCEnergyReward(message.npcType));
 
     // Play kill sound for local hawk
     if (isLocalCollector) {
       AudioManager.play(SFX.NPC_KILL, 'sfx');
+      this.showEventPopup(`NPC caught +${this.getNPCEnergyReward(message.npcType).toFixed(0)} energy`, 'good');
     }
   }
 
@@ -1597,50 +1932,65 @@ export class Game {
     // Client receives round start from host
     if (this.gameState?.isHost) return; // Host handles this directly
 
-    if (!this.gameState || !this.localPlayer || !this.remotePlayer) return;
+    if (!this.gameState || !this.localPlayer) return;
+    this.scoreUI.hide();
 
     console.log('Client received round start from host:', message.roundNumber);
 
-    // Update player roles
-    const localPlayerState = this.gameState.getLocalPlayer();
-    const remotePlayerState = this.gameState.getRemotePlayer();
-
-    if (localPlayerState && remotePlayerState) {
-      // Use host-authoritative role map from ROUND_START.
-      const localRole = message.roles[this.gameState.localPeerId] as PlayerRole;
-      const remoteRole = message.roles[this.gameState.remotePeerId!] as PlayerRole;
-      if (localRole) localPlayerState.role = localRole;
-      if (remoteRole) remotePlayerState.role = remoteRole;
-
-      this.localPlayer.role = localPlayerState.role;
-      this.remotePlayer.role = remotePlayerState.role;
-
-      // Swap bird models for new roles
-      this.swapPlayerModel(this.localPlayer);
-      this.swapPlayerModel(this.remotePlayer);
-
-      // Reset transforms from host-authoritative spawn states.
-      const localSpawn = message.spawnStates[this.gameState.localPeerId];
-      const remoteSpawn = message.spawnStates[this.gameState.remotePeerId!];
-      if (localSpawn) {
-        this.localPlayer.position.set(localSpawn.position.x, localSpawn.position.y, localSpawn.position.z);
-        this.localPlayer.rotation.set(localSpawn.rotation.x, localSpawn.rotation.y, localSpawn.rotation.z);
-        this.localPlayer.velocity.set(localSpawn.velocity.x, localSpawn.velocity.y, localSpawn.velocity.z);
+    // Align player state map to host-authoritative role roster.
+    for (const peerId of Array.from(this.gameState.players.keys())) {
+      if (!(peerId in message.roles)) {
+        this.gameState.players.delete(peerId);
       }
-      if (remoteSpawn) {
-        this.remotePlayer.position.set(remoteSpawn.position.x, remoteSpawn.position.y, remoteSpawn.position.z);
-        this.remotePlayer.rotation.set(remoteSpawn.rotation.x, remoteSpawn.rotation.y, remoteSpawn.rotation.z);
-        this.remotePlayer.velocity.set(remoteSpawn.velocity.x, remoteSpawn.velocity.y, remoteSpawn.velocity.z);
+    }
+
+    Object.entries(message.roles).forEach(([peerId, role]) => {
+      const spawn = message.spawnStates[peerId];
+      const spawnPos = spawn
+        ? new THREE.Vector3(spawn.position.x, spawn.position.y, spawn.position.z)
+        : new THREE.Vector3(0, 5, 0);
+      const state = this.gameState!.players.get(peerId)
+        ?? this.gameState!.addPlayer(peerId, role as PlayerRole, spawnPos);
+      state.role = role as PlayerRole;
+    });
+
+    this.syncRemotePlayersFromGameState();
+
+    Object.entries(message.roles).forEach(([peerId, role]) => {
+      const player = this.getPlayerByPeerId(peerId);
+      const playerState = this.gameState!.players.get(peerId);
+      if (!player || !playerState) return;
+
+      playerState.role = role as PlayerRole;
+      player.role = role as PlayerRole;
+      this.swapPlayerModel(player);
+
+      const spawn = message.spawnStates[peerId];
+      if (spawn) {
+        player.position.set(spawn.position.x, spawn.position.y, spawn.position.z);
+        player.rotation.set(spawn.rotation.x, spawn.rotation.y, spawn.rotation.z);
+        player.velocity.set(spawn.velocity.x, spawn.velocity.y, spawn.velocity.z);
+      } else {
+        player.velocity.set(0, 0, 0);
       }
 
-      localPlayerState.position.copy(this.localPlayer.position);
-      localPlayerState.rotation.copy(this.localPlayer.rotation);
-      localPlayerState.velocity.copy(this.localPlayer.velocity);
-      localPlayerState.isEating = false;
-      remotePlayerState.position.copy(this.remotePlayer.position);
-      remotePlayerState.rotation.copy(this.remotePlayer.rotation);
-      remotePlayerState.velocity.copy(this.remotePlayer.velocity);
-      remotePlayerState.isEating = false;
+      player.bankVelocity = 0;
+      player.isEating = false;
+      player.mesh.position.copy(player.position);
+      player.applyMeshRotation();
+
+      playerState.position.copy(player.position);
+      playerState.rotation.copy(player.rotation);
+      playerState.velocity.copy(player.velocity);
+      playerState.isEating = false;
+    });
+
+    if (!this.gameState.remotePeerId) {
+      const firstRemoteId = Object.keys(message.roles)
+        .find((peerId) => peerId !== this.gameState!.localPeerId);
+      if (firstRemoteId) {
+        this.gameState.remotePeerId = firstRemoteId;
+      }
     }
 
     this.syncRoleControllers();
@@ -1652,11 +2002,9 @@ export class Game {
     }
     this.syncNPCStateFromGameState();
 
-    // Start new round
-    this.gameState.roundNumber = Math.max(0, message.roundNumber - 1);
-    this.gameState.startRound();
-
-    AudioManager.play(SFX.ROUND_START, 'sfx');
+    const countdownSeconds = message.countdownSeconds ?? this.roundCountdownSeconds;
+    const roundStartAt = message.roundStartAt ?? (Date.now() + (countdownSeconds * 1000));
+    this.runRoundCountdown(message.roundNumber, roundStartAt, countdownSeconds);
   }
 
   /**
@@ -1665,7 +2013,20 @@ export class Game {
   private setupDisconnectHandlers(): void {
     if (!this.peerConnection) return;
 
-    this.peerConnection.onDisconnected(() => {
+    this.peerConnection.onDisconnected((peerId) => {
+      if (this.gameState?.isHost) {
+        if (peerId) {
+          this.gameState.players.delete(peerId);
+          this.removeRemotePlayer(peerId);
+          if (this.gameState.remotePeerId === peerId) {
+            const remainingPeerIds = this.peerConnection?.getRemotePeerIds() ?? [];
+            this.gameState.remotePeerId = remainingPeerIds.length > 0 ? remainingPeerIds[0] : null;
+          }
+          this.syncRoleControllers();
+          this.showEventPopup('A player disconnected', 'warn');
+        }
+        return;
+      }
       console.log('Peer disconnected');
       const overlay = document.getElementById('disconnect-overlay');
       if (overlay) overlay.style.display = 'block';
@@ -1724,6 +2085,31 @@ export class Game {
     }
   }
 
+  private showFoodPopup(foodType: FoodType, weightGain: number, energyGain: number): void {
+    if (!this.localPlayer) return;
+    if (this.localPlayer.role === PlayerRole.PIGEON && foodType !== FoodType.RAT) {
+      this.showEventPopup(`+${weightGain.toFixed(1)} weight`, 'good');
+      return;
+    }
+    if (this.localPlayer.role === PlayerRole.HAWK && foodType === FoodType.RAT) {
+      this.showEventPopup(`+${energyGain.toFixed(0)} energy`, 'good');
+    }
+  }
+
+  private showEventPopup(text: string, variant: 'good' | 'warn' = 'good'): void {
+    const feed = document.getElementById('event-feed');
+    if (!feed) return;
+
+    const item = document.createElement('div');
+    item.className = `event-popup ${variant}`;
+    item.textContent = text;
+    feed.appendChild(item);
+
+    window.setTimeout(() => {
+      item.remove();
+    }, 1500);
+  }
+
   /**
    * Check hawk dive state transitions and play dive sound.
    */
@@ -1746,13 +2132,14 @@ export class Game {
    */
   public dispose(): void {
     window.removeEventListener('keydown', this.debugToggleHandler);
+    this.clearRoundCountdownState();
     if (this.ambientLoopId) AudioManager.stop(this.ambientLoopId);
     if (this.windLoopId) AudioManager.stop(this.windLoopId);
     AudioManager.dispose();
     this.sceneManager.dispose();
     this.inputManager.dispose();
     if (this.localPlayer) this.localPlayer.dispose();
-    if (this.remotePlayer) this.remotePlayer.dispose();
+    this.remotePlayers.forEach((remotePlayer) => remotePlayer.dispose());
     if (this.foodSpawner) this.foodSpawner.dispose();
     if (this.npcSpawner) this.npcSpawner.dispose();
     if (this.environment) this.environment.dispose();

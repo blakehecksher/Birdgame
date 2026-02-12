@@ -7,8 +7,14 @@ export class Player {
   public rotation: THREE.Euler;
   public velocity: THREE.Vector3;
   public role: PlayerRole;
-  public radius: number;
-  private readonly baseRadius: number;
+
+  // Ellipsoid collision radii (world-scaled)
+  public collisionRadii: THREE.Vector3;
+  public radius: number; // max of collisionRadii (used for sphere fallback checks)
+  private baseCollisionRadii: THREE.Vector3;
+  private baseRadius: number = 0;
+  private debugMesh: THREE.Mesh | null = null;
+
   private modelOffsetQ: THREE.Quaternion;
 
   // Player state
@@ -17,7 +23,6 @@ export class Player {
 
   // Speed multiplier (affected by weight/energy)
   public speedMultiplier: number = 1.0;
-  public terrainSpeedMultiplier: number = 1.0;
 
   // Bank physics state
   public bankVelocity: number = 0;
@@ -27,8 +32,9 @@ export class Player {
     this.position = initialPosition || new THREE.Vector3(0, 5, 0);
     this.rotation = new THREE.Euler(0, 0, 0);
     this.velocity = new THREE.Vector3(0, 0, 0);
-    this.baseRadius = GAME_CONFIG.PLAYER_RADIUS;
-    this.radius = this.baseRadius;
+    this.baseCollisionRadii = new THREE.Vector3();
+    this.collisionRadii = new THREE.Vector3();
+    this.radius = 0;
 
     // Use loaded 3D model if available, otherwise fall back to procedural mesh
     this.mesh = new THREE.Group();
@@ -42,6 +48,7 @@ export class Player {
       this.modelOffsetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     }
     this.mesh.position.copy(this.position);
+    this.updateCollisionShape();
     this.setVisualScale(1);
   }
 
@@ -151,16 +158,66 @@ export class Player {
    * Get current speed (base speed * multiplier)
    */
   public getCurrentSpeed(): number {
-    return this.getBaseSpeed() * this.speedMultiplier * this.terrainSpeedMultiplier;
+    return this.getBaseSpeed() * this.speedMultiplier;
   }
 
   /**
-   * Set a uniform visual scale and keep collision radius aligned with it.
+   * Set a uniform visual scale and keep collision radii aligned with it.
    */
   public setVisualScale(scale: number): void {
     const safeScale = Math.max(0.1, scale);
     this.mesh.scale.setScalar(safeScale);
-    this.radius = this.baseRadius * safeScale;
+    this.collisionRadii.copy(this.baseCollisionRadii).multiplyScalar(safeScale);
+    this.radius = Math.max(this.collisionRadii.x, this.collisionRadii.y, this.collisionRadii.z);
+  }
+
+  /**
+   * Rebuild collision radii and debug mesh for the current role.
+   * Call after role changes (e.g. round swap).
+   */
+  public updateCollisionShape(): void {
+    const isPigeon = this.role === PlayerRole.PIGEON;
+    this.baseCollisionRadii.set(
+      isPigeon ? GAME_CONFIG.PIGEON_COLLISION_RX : GAME_CONFIG.HAWK_COLLISION_RX,
+      isPigeon ? GAME_CONFIG.PIGEON_COLLISION_RY : GAME_CONFIG.HAWK_COLLISION_RY,
+      isPigeon ? GAME_CONFIG.PIGEON_COLLISION_RZ : GAME_CONFIG.HAWK_COLLISION_RZ,
+    );
+    this.baseRadius = Math.max(
+      this.baseCollisionRadii.x,
+      this.baseCollisionRadii.y,
+      this.baseCollisionRadii.z,
+    );
+
+    // Apply current visual scale
+    const currentScale = Math.max(0.1, this.mesh.scale.x);
+    this.collisionRadii.copy(this.baseCollisionRadii).multiplyScalar(currentScale);
+    this.radius = this.baseRadius * currentScale;
+
+    // Debug ellipsoid visualization
+    if (this.debugMesh) {
+      this.mesh.remove(this.debugMesh);
+      this.debugMesh.geometry.dispose();
+      (this.debugMesh.material as THREE.Material).dispose();
+      this.debugMesh = null;
+    }
+    if (GAME_CONFIG.SHOW_COLLISION_DEBUG) {
+      const geo = new THREE.SphereGeometry(1, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: isPigeon ? 0x00aaff : 0xff4400,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.4,
+        depthTest: false,
+      });
+      this.debugMesh = new THREE.Mesh(geo, mat);
+      this.debugMesh.scale.set(
+        this.baseCollisionRadii.x,
+        this.baseCollisionRadii.y,
+        this.baseCollisionRadii.z,
+      );
+      this.debugMesh.renderOrder = 999;
+      this.mesh.add(this.debugMesh);
+    }
   }
 
   /**

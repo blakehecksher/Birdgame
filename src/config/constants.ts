@@ -12,6 +12,7 @@ export const GAME_CONFIG = {
   PIGEON_WEIGHT_PENALTY: 0.05, // Speed reduction per weight unit
   PIGEON_SIZE_SCALE: 0.05, // Visual size increase per weight unit
   PIGEON_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  PIGEON_MOUSE_BANK_SENSITIVITY: 0.004, // Subtle mouse X -> bank assist
   PIGEON_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
   PIGEON_BANK_ACCELERATION: 12.0,
   PIGEON_BANK_SPRING_STIFFNESS: 12.0,
@@ -30,6 +31,7 @@ export const GAME_CONFIG = {
   HAWK_DIVE_MAX_SPEED_MULT: 2.0, // Max speed multiplier at steepest dive
   HAWK_DIVE_ENERGY_DRAIN_MULT: 2.5, // Extra energy drain while diving
   HAWK_MOUSE_PITCH_SENSITIVITY: 0.0015,
+  HAWK_MOUSE_BANK_SENSITIVITY: 0.004, // Subtle mouse X -> bank assist
   HAWK_MAX_PITCH: Math.PI / 3, // Maximum pitch angle (60 degrees)
   HAWK_BANK_ACCELERATION: 8.0,
   HAWK_BANK_SPRING_STIFFNESS: 6.0,
@@ -37,11 +39,20 @@ export const GAME_CONFIG = {
   HAWK_MAX_BANK_ANGLE: Math.PI / 3,
   HAWK_BANK_TURN_COUPLING: 1.0, // Hawks bank less aggressively than pigeons
 
+  // Player collision ellipsoid (per-role, in local bird space)
+  // X = forward/back, Y = up/down, Z = left/right (wingspan)
+  PIGEON_COLLISION_RX: 0.7,   // forward/back half-extent
+  PIGEON_COLLISION_RY: 0.35,  // vertical half-extent
+  PIGEON_COLLISION_RZ: 0.45,  // side-to-side half-extent
+
+  HAWK_COLLISION_RX: 0.9,     // longer body
+  HAWK_COLLISION_RY: 0.3,     // sleeker profile
+  HAWK_COLLISION_RZ: 0.55,    // wider wingspan
+
+  SHOW_COLLISION_DEBUG: false,  // render transparent collision ellipsoid on players
+
   // Player physics
-  PLAYER_RADIUS: 1.5, // Collision sphere radius
   AIR_RESISTANCE: 0.9, // Velocity multiplier per frame
-  SURFACE_WALK_SPEED_MULTIPLIER: 0.2, // 20% speed while on ground/rooftops
-  SURFACE_CONTACT_EPSILON: 0.12,
 
   // Camera settings
   CAMERA_DISTANCE: 5,
@@ -53,8 +64,8 @@ export const GAME_CONFIG = {
   CAMERA_ZOOM_SPEED: 1.5,
 
   // Network settings
-  TICK_RATE: 20, // Updates per second
-  STATE_BUFFER_TIME: 100, // Milliseconds
+  TICK_RATE: 30, // Movement updates per second
+  STATE_BUFFER_TIME: 120, // Interpolation delay in milliseconds
 
   // Food settings
   FOOD_RESPAWN_TIME: 30, // Seconds

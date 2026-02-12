@@ -46,6 +46,11 @@ export class NPC {
   public exists: boolean = true;
   public readonly radius: number;
 
+  // Client-side interpolation targets (set by applySnapshot, lerped each frame)
+  private targetPosition: THREE.Vector3 = new THREE.Vector3();
+  private targetHeading: number = 0;
+  private hasTarget: boolean = false;
+
   private stateTimer: number = 0;
   private respawnTimer: number = 0;
   private moveDirection: THREE.Vector3 = new THREE.Vector3();
@@ -292,6 +297,8 @@ export class NPC {
     this.state = NPCState.DEAD;
     this.respawnTimer = respawnTime;
     this.mesh.visible = false;
+    // Reset interpolation so respawn snaps to the new position
+    this.hasTarget = false;
   }
 
   public isReadyToRespawn(): boolean {
@@ -440,13 +447,44 @@ export class NPC {
   }
 
   public applySnapshot(snapshot: NPCSnapshot): void {
-    this.position.set(snapshot.position.x, snapshot.position.y, snapshot.position.z);
-    this.heading = snapshot.rotation;
     this.state = snapshot.state;
     this.exists = snapshot.exists;
-    this.mesh.position.copy(this.position);
-    this.mesh.rotation.y = this.heading;
     this.mesh.visible = this.exists;
+
+    if (!this.hasTarget) {
+      // First snapshot — snap immediately (no previous position to lerp from)
+      this.position.set(snapshot.position.x, snapshot.position.y, snapshot.position.z);
+      this.heading = snapshot.rotation;
+      this.mesh.position.copy(this.position);
+      this.mesh.rotation.y = this.heading;
+    }
+
+    // Set interpolation targets for subsequent frames
+    this.targetPosition.set(snapshot.position.x, snapshot.position.y, snapshot.position.z);
+    this.targetHeading = snapshot.rotation;
+    this.hasTarget = true;
+  }
+
+  /**
+   * Smoothly interpolate mesh toward the latest snapshot target.
+   * Called every frame on the client to eliminate jitter between network updates.
+   */
+  public lerpToTarget(deltaTime: number): void {
+    if (!this.hasTarget || !this.exists) return;
+
+    // Lerp factor: reaches ~95% of target in ~100ms at 60fps
+    const factor = Math.min(1, deltaTime * 12);
+
+    this.position.lerp(this.targetPosition, factor);
+    this.mesh.position.copy(this.position);
+
+    // Shortest-path angle lerp for heading
+    const delta = Math.atan2(
+      Math.sin(this.targetHeading - this.heading),
+      Math.cos(this.targetHeading - this.heading)
+    );
+    this.heading += delta * factor;
+    this.mesh.rotation.y = this.heading;
   }
 
   public dispose(): void {

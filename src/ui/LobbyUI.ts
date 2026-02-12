@@ -2,6 +2,20 @@
  * Lobby UI Manager
  * Handles the pre-game lobby interface for hosting/joining games
  */
+import { PersonalBests, formatBestTime, formatBestWeight } from './personalBests';
+
+export const USERNAME_STORAGE_KEY = 'birdgame_username';
+
+export function createFallbackUsername(randomFn: () => number = Math.random): string {
+  const suffix = Math.floor(randomFn() * 900 + 100);
+  return `bird-${suffix}`;
+}
+
+export function resolveUsername(raw: string, fallback: string): string {
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
 export class LobbyUI {
   private lobbyElement: HTMLElement;
   private lobbyMenu: HTMLElement;
@@ -15,12 +29,20 @@ export class LobbyUI {
   private peerIdDisplay: HTMLInputElement;
   private peerIdInput: HTMLInputElement;
   private usernameInput: HTMLInputElement;
+  private joinUsernameInput: HTMLInputElement;
+  private hostStatus: HTMLElement;
+  private joinStatus: HTMLElement;
   private leaderboardFat: HTMLOListElement;
   private leaderboardKill: HTMLOListElement;
   private leaderboardStatus: HTMLElement;
+  private personalBestFat: HTMLElement;
+  private personalBestKill: HTMLElement;
+  private personalBestBadge: HTMLElement;
 
   private onHostCallback: (() => void) | null = null;
   private onJoinCallback: ((peerId: string) => void) | null = null;
+  private fallbackUsername: string = createFallbackUsername();
+  private pendingRoomCode: string | null = null;
 
   constructor() {
     // Get DOM elements
@@ -36,9 +58,15 @@ export class LobbyUI {
     this.peerIdDisplay = document.getElementById('peer-id-display') as HTMLInputElement;
     this.peerIdInput = document.getElementById('peer-id-input') as HTMLInputElement;
     this.usernameInput = document.getElementById('username-input') as HTMLInputElement;
+    this.joinUsernameInput = document.getElementById('join-username-input') as HTMLInputElement;
+    this.hostStatus = document.getElementById('host-status') as HTMLElement;
+    this.joinStatus = document.getElementById('join-status') as HTMLElement;
     this.leaderboardFat = document.getElementById('leaderboard-fat') as HTMLOListElement;
     this.leaderboardKill = document.getElementById('leaderboard-kill') as HTMLOListElement;
     this.leaderboardStatus = document.getElementById('leaderboard-status') as HTMLElement;
+    this.personalBestFat = document.getElementById('personal-best-fat') as HTMLElement;
+    this.personalBestKill = document.getElementById('personal-best-kill') as HTMLElement;
+    this.personalBestBadge = document.getElementById('personal-best-badge') as HTMLElement;
 
     this.setupEventListeners();
     this.restoreUsername();
@@ -61,7 +89,12 @@ export class LobbyUI {
     // Connect button
     this.connectBtn.addEventListener('click', () => {
       const peerId = this.peerIdInput.value.trim();
-      if (peerId && this.onJoinCallback) {
+      if (!peerId) {
+        this.setJoinStatus('Enter a room code to connect.');
+        return;
+      }
+      this.getEffectiveUsername();
+      if (this.onJoinCallback) {
         this.onJoinCallback(peerId);
       }
     });
@@ -106,24 +139,40 @@ export class LobbyUI {
       });
     }
 
-    this.usernameInput.addEventListener('input', () => {
-      localStorage.setItem('birdgame_username', this.getUsername());
-    });
+    const syncFromMain = () => this.setUsername(this.usernameInput.value);
+    const syncFromJoin = () => this.setUsername(this.joinUsernameInput.value);
+    this.usernameInput.addEventListener('input', syncFromMain);
+    this.joinUsernameInput.addEventListener('input', syncFromJoin);
   }
 
   private restoreUsername(): void {
-    const saved = localStorage.getItem('birdgame_username');
-    if (saved) {
-      this.usernameInput.value = saved;
-      return;
+    const saved = localStorage.getItem(USERNAME_STORAGE_KEY)?.trim() ?? '';
+    const restored = resolveUsername(saved, this.fallbackUsername);
+    this.setUsername(restored, true);
+  }
+
+  private setUsername(value: string, persist: boolean = true): void {
+    const trimmed = value.trim();
+    this.usernameInput.value = trimmed;
+    this.joinUsernameInput.value = trimmed;
+    if (persist) {
+      localStorage.setItem(USERNAME_STORAGE_KEY, trimmed);
     }
-    this.usernameInput.value = `bird-${Math.floor(Math.random() * 900 + 100)}`;
+  }
+
+  private setHostStatus(message: string): void {
+    this.hostStatus.textContent = message;
+  }
+
+  private setJoinStatus(message: string): void {
+    this.joinStatus.textContent = message;
   }
 
   private resetJoinControls(): void {
     this.peerIdInput.disabled = false;
     this.connectBtn.disabled = false;
     this.connectBtn.textContent = 'Connect';
+    this.setJoinStatus('Input username (optional), then enter room code.');
   }
 
   /**
@@ -153,7 +202,13 @@ export class LobbyUI {
     this.lobbyMenu.classList.add('hidden');
     this.hostScreen.classList.add('hidden');
     this.joinScreen.classList.remove('hidden');
-    this.peerIdInput.value = '';
+    this.peerIdInput.value = this.pendingRoomCode ?? '';
+    this.pendingRoomCode = null;
+    this.joinUsernameInput.value = this.usernameInput.value.trim();
+    if (this.peerIdInput.value) {
+      this.connectBtn.focus();
+      return;
+    }
     this.peerIdInput.focus();
   }
 
@@ -186,6 +241,7 @@ export class LobbyUI {
 
     // Also set the old peer ID display for fallback
     this.peerIdDisplay.value = roomCode;
+    this.setHostStatus('Waiting for friends to join...');
   }
 
   /**
@@ -213,12 +269,21 @@ export class LobbyUI {
     this.peerIdInput.disabled = true;
     this.connectBtn.disabled = true;
     this.connectBtn.textContent = 'Connecting...';
+    this.setJoinStatus('Connecting to host...');
   }
 
   /**
    * Show loading/waiting state
    */
   public showWaiting(message: string): void {
+    if (!this.hostScreen.classList.contains('hidden')) {
+      this.setHostStatus(message);
+      return;
+    }
+    if (!this.joinScreen.classList.contains('hidden')) {
+      this.setJoinStatus(message);
+      return;
+    }
     console.log('Waiting:', message);
   }
 
@@ -247,6 +312,17 @@ export class LobbyUI {
     return this.usernameInput.value.trim();
   }
 
+  public getEffectiveUsername(): string {
+    const username = resolveUsername(this.usernameInput.value, this.fallbackUsername);
+    this.setUsername(username, true);
+    return username;
+  }
+
+  public prefillJoinRoomCode(roomCode: string): void {
+    this.pendingRoomCode = roomCode;
+    this.showJoinScreen();
+  }
+
   public setLeaderboardStatus(text: string): void {
     this.leaderboardStatus.textContent = text;
   }
@@ -272,5 +348,14 @@ export class LobbyUI {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = Math.floor(totalSeconds % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  public renderPersonalBests(bests: PersonalBests): void {
+    this.personalBestFat.textContent = `Fattest pigeon: ${formatBestWeight(bests.fattestPigeon)}`;
+    this.personalBestKill.textContent = `Fastest hawk kill: ${formatBestTime(bests.fastestHawkKill)}`;
+  }
+
+  public showPersonalBestBadge(show: boolean): void {
+    this.personalBestBadge.style.display = show ? 'inline-block' : 'none';
   }
 }
