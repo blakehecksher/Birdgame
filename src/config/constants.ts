@@ -40,6 +40,8 @@ export const GAME_CONFIG = {
   // Player physics
   PLAYER_RADIUS: 1.5, // Collision sphere radius
   AIR_RESISTANCE: 0.9, // Velocity multiplier per frame
+  SURFACE_WALK_SPEED_MULTIPLIER: 0.002, // 0.2% speed while on ground/rooftops
+  SURFACE_CONTACT_EPSILON: 0.12,
 
   // Camera settings
   CAMERA_DISTANCE: 5,

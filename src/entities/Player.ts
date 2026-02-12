@@ -17,6 +17,7 @@ export class Player {
 
   // Speed multiplier (affected by weight/energy)
   public speedMultiplier: number = 1.0;
+  public terrainSpeedMultiplier: number = 1.0;
 
   // Bank physics state
   public bankVelocity: number = 0;
@@ -150,7 +151,7 @@ export class Player {
    * Get current speed (base speed * multiplier)
    */
   public getCurrentSpeed(): number {
-    return this.getBaseSpeed() * this.speedMultiplier;
+    return this.getBaseSpeed() * this.speedMultiplier * this.terrainSpeedMultiplier;
   }
 
   /**

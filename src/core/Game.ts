@@ -516,6 +516,8 @@ export class Game {
   private update(deltaTime: number): void {
     if (!this.gameState || !this.localPlayer) return;
 
+    this.applySurfaceSpeedModifier(this.localPlayer);
+
     // Get input
     const input = this.inputManager.getInputState();
 
@@ -541,6 +543,8 @@ export class Game {
         );
       }
     }
+
+    this.applySurfaceSpeedModifier(this.localPlayer);
 
     // Authoritative stat simulation runs on host
     if (this.gameState.isHost) {
@@ -606,6 +610,7 @@ export class Game {
             }
           }
 
+          this.applySurfaceSpeedModifier(this.remotePlayer);
           this.updateRoleStats(this.remotePlayer, deltaTime);
 
           // Sync remote player state to game state
@@ -1157,11 +1162,38 @@ export class Game {
     this.remotePlayer.setVisualScale(1);
     this.localPlayer.speedMultiplier = 1;
     this.remotePlayer.speedMultiplier = 1;
+    this.localPlayer.terrainSpeedMultiplier = 1;
+    this.remotePlayer.terrainSpeedMultiplier = 1;
 
     this.localPigeon = this.localPlayer.role === PlayerRole.PIGEON ? new Pigeon(this.localPlayer) : null;
     this.localHawk = this.localPlayer.role === PlayerRole.HAWK ? new Hawk(this.localPlayer) : null;
     this.remotePigeon = this.remotePlayer.role === PlayerRole.PIGEON ? new Pigeon(this.remotePlayer) : null;
     this.remoteHawk = this.remotePlayer.role === PlayerRole.HAWK ? new Hawk(this.remotePlayer) : null;
+  }
+
+  /**
+   * Apply terrain speed penalties when player is touching ground or rooftops.
+   */
+  private applySurfaceSpeedModifier(player: Player): void {
+    if (!this.environment) {
+      player.terrainSpeedMultiplier = 1;
+      return;
+    }
+
+    const onWalkableSurface = this.environment.isOnWalkableSurface(player.position, player.radius);
+    player.terrainSpeedMultiplier = onWalkableSurface
+      ? GAME_CONFIG.SURFACE_WALK_SPEED_MULTIPLIER
+      : 1;
+
+    if (!onWalkableSurface) return;
+
+    const maxWalkSpeed = player.getBaseSpeed() * player.speedMultiplier * GAME_CONFIG.SURFACE_WALK_SPEED_MULTIPLIER;
+    const horizontalSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    if (horizontalSpeed <= maxWalkSpeed || horizontalSpeed <= 0.0001) return;
+
+    const clampRatio = maxWalkSpeed / horizontalSpeed;
+    player.velocity.x *= clampRatio;
+    player.velocity.z *= clampRatio;
   }
 
   /**
