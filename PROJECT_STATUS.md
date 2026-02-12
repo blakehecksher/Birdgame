@@ -660,14 +660,70 @@ Low-poly cartoon style matching `assets/Landing Page.png` — fat rounded pigeon
 
 ---
 
+---
+
+## Baseline Snapshot — Feb 11, 2026
+
+**Purpose:** Reference point ("line in the sand") for current project state.
+
+### What's Working
+- **Full multiplayer game loop**: Host/join via room codes, role assignment, round timer, scoring, role swap between rounds
+- **Flight system**: Airplane-style controls (mouse pitch, A/D bank, W thrust, bank-turn coupling), per-role tuning (pigeon vs hawk sensitivity/speed), flight attitude indicator
+- **City environment**: 10x10 seeded grid (~300x300 units), deterministic building/park generation, trees/benches/lampposts, street markings, world bounds
+- **Food system**: Crumbs, bagels, pizza scattered across parks/streets/rooftops; pigeon weight gain + speed penalty + visual scaling
+- **Hawk mechanics**: Energy drain over time, dive attack (pitch-down speed boost + energy cost), eating NPC prey for energy, tree canopy slowdown
+- **NPC prey**: Pigeons (airborne, swooping), rats (ground/streets), squirrels (tree canopy biased); host-authoritative AI with flee behavior
+- **3D models**: GLB model loading for birds (hawk/pigeon) with procedural fallback; model infrastructure for NPCs/food/environment
+- **Networking**: PeerJS WebRTC, 30Hz player state sync with client interpolation, room codes with URL auto-join, reconnect/disconnect handling
+- **Camera**: Third-person follow with collision raycasting, scroll-wheel zoom
+- **Leaderboard**: Supabase-backed anonymous leaderboard (fattest pigeon, fastest hawk kill)
+- **UI/Lobby**: Landing page hero image, username input, room code copy button, instructions overlay, HUD (energy/weight bars, dive indicator, crosshair, eating indicator), volume controls
+
+### Known Issues & Gaps
+1. ~~Camera clip through buildings~~ — FIXED
+2. **Audio system**: Infrastructure (`AudioManager`, `SoundManifest`) is wired but no sound files exist yet — game runs silently
+3. **NPC jitter on non-host**: NPCs sync at 4Hz (250ms) with no interpolation — clients see ~10fps teleporting NPCs *(fix in progress)*
+4. **Wing flapping**: Designed but not implemented — needs rigged GLB models with animation clips
+5. **NPC models**: Using procedural fallback meshes — GLB slots ready but no model files provided
+6. **Food models**: Using procedural fallback meshes — GLB slots ready but no model files provided
+7. ~~No leaderboard~~ — FIXED (Supabase integration)
+8. ~~No dive attack~~ — FIXED
+9. ~~Limited map~~ — FIXED (10x10 grid)
+
+### Architecture Summary
+| Component | Approach |
+|-----------|----------|
+| Rendering | Three.js, procedural + GLB models |
+| Networking | PeerJS WebRTC, host-authoritative |
+| Player sync | 30Hz state sync + client-side interpolation (120ms buffer) |
+| NPC sync | 4Hz snapshot (250ms), snap-to-position (no interp) |
+| World gen | Deterministic seeded PRNG, identical on both peers |
+| Collision | Manual AABB (buildings) + sphere (entities), no physics engine |
+| Build | Vite + TypeScript, deployed to GitHub Pages |
+
+### Key Files (current line counts)
+- `src/core/Game.ts` — Main orchestrator (~2150 lines)
+- `src/config/constants.ts` — All tuning values
+- `src/network/NetworkManager.ts` — State sync + interpolation (~663 lines)
+- `src/network/messages.ts` — Network protocol types
+- `src/entities/NPC.ts` — NPC entity + AI state machine
+- `src/world/NPCSpawner.ts` — NPC lifecycle manager
+- `src/world/Environment.ts` — 10x10 seeded city generator
+- `src/utils/ModelLoader.ts` — GLB preloading + manifest
+- `src/audio/AudioManager.ts` — Web Audio API singleton (wired, no files)
+- `index.html` — All UI elements
+
+---
+
 ## Known Limitations
 1. ~~Camera can clip through buildings~~ — FIXED (Phase 2)
-2. No audio (future)
+2. Audio system wired but no sound files — game runs silently
 3. ~~Simple bird models~~ — GLB models integrated (Feb 8, 2026)
-4. ~~No AI prey~~ - basic AI prey is implemented (advanced behavior/model polish pending)
-5. ~~Limited map (2x2 blocks)~~ — Phase 3 expansion to 10x10 grid (see above)
+4. ~~No AI prey~~ — NPC pigeons, rats, squirrels implemented (model polish pending)
+5. ~~Limited map (2x2 blocks)~~ — Phase 3 expansion to 10x10 grid
 6. ~~No dive attack for hawk~~ — FIXED (Phase 2)
-7. No leaderboard (future)
+7. ~~No leaderboard~~ — FIXED (Supabase, Feb 8, 2026)
+8. NPC client-side jitter — interpolation fix in progress
 
 ---
 

@@ -26,7 +26,7 @@ export class NetworkManager {
   private lastInputTime: number = 0;
   private tickRate: number;
   private lastWorldSyncTime: number = 0;
-  private worldSyncIntervalMs: number = 250;
+  private worldSyncIntervalMs: number = 100;
 
   // State buffer for interpolation (client only)
   private stateBuffer: StateSyncMessage[] = [];

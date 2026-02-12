@@ -785,6 +785,8 @@ export class Game {
         this.syncNPCStateToGameState();
       } else {
         this.syncNPCStateFromGameState();
+        // Smoothly interpolate NPC visuals between network snapshots
+        this.npcSpawner.updateVisuals(deltaTime);
       }
     }
 
@@ -919,8 +921,6 @@ export class Game {
         const weight = this.getPlayerWeight(this.localPlayer);
         const weightValue = document.getElementById('weight-value');
         if (weightValue) weightValue.textContent = weight.toFixed(1);
-        const weightBar = document.getElementById('weight-bar');
-        if (weightBar) weightBar.style.width = `${Math.min(100, (weight / 20) * 100)}%`;
       }
     }
 
@@ -1827,6 +1827,7 @@ export class Game {
     if (model) {
       player.swapModel(model);
     }
+    player.updateCollisionShape();
   }
 
   /**

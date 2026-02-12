@@ -6,12 +6,23 @@ import { Player } from '../entities/Player';
  */
 export class CollisionDetector {
   /**
-   * Check sphere-sphere collision between two players
+   * Check ellipsoid-ellipsoid collision between two players.
+   * Uses Minkowski-sum approximation: treats summed radii as a single ellipsoid.
    */
   public checkPlayerCollision(player1: Player, player2: Player): boolean {
-    const distance = player1.position.distanceTo(player2.position);
-    const combinedRadius = player1.radius + player2.radius;
-    return distance < combinedRadius;
+    const dx = player1.position.x - player2.position.x;
+    const dy = player1.position.y - player2.position.y;
+    const dz = player1.position.z - player2.position.z;
+
+    const rx = player1.collisionRadii.x + player2.collisionRadii.x;
+    const ry = player1.collisionRadii.y + player2.collisionRadii.y;
+    const rz = player1.collisionRadii.z + player2.collisionRadii.z;
+
+    const nx = dx / rx;
+    const ny = dy / ry;
+    const nz = dz / rz;
+
+    return (nx * nx + ny * ny + nz * nz) < 1;
   }
 
   /**

@@ -173,6 +173,15 @@ export class NPCSpawner {
     return this.getNPCs().map((npc) => npc.getSnapshot());
   }
 
+  /**
+   * Client-side visual update: lerp all NPCs toward their latest snapshot targets.
+   */
+  public updateVisuals(deltaTime: number): void {
+    for (const npc of this.npcs.values()) {
+      npc.lerpToTarget(deltaTime);
+    }
+  }
+
   public applySnapshots(snapshots: NPCSnapshot[]): void {
     for (const snap of snapshots) {
       let npc = this.npcs.get(snap.id);

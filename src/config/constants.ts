@@ -39,8 +39,19 @@ export const GAME_CONFIG = {
   HAWK_MAX_BANK_ANGLE: Math.PI / 3,
   HAWK_BANK_TURN_COUPLING: 1.0, // Hawks bank less aggressively than pigeons
 
+  // Player collision ellipsoid (per-role, in local bird space)
+  // X = forward/back, Y = up/down, Z = left/right (wingspan)
+  PIGEON_COLLISION_RX: 0.7,   // forward/back half-extent
+  PIGEON_COLLISION_RY: 0.35,  // vertical half-extent
+  PIGEON_COLLISION_RZ: 0.45,  // side-to-side half-extent
+
+  HAWK_COLLISION_RX: 0.9,     // longer body
+  HAWK_COLLISION_RY: 0.3,     // sleeker profile
+  HAWK_COLLISION_RZ: 0.55,    // wider wingspan
+
+  SHOW_COLLISION_DEBUG: false,  // render transparent collision ellipsoid on players
+
   // Player physics
-  PLAYER_RADIUS: 1.5, // Collision sphere radius
   AIR_RESISTANCE: 0.9, // Velocity multiplier per frame
 
   // Camera settings

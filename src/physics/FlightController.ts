@@ -136,9 +136,10 @@ export class FlightController {
       player.velocity.normalize().multiplyScalar(maxVelocity);
     }
 
-    // Keep player above ground
-    if (player.position.y < 1) {
-      player.position.y = 1;
+    // Keep player above ground (use vertical collision radius so belly touches ground)
+    const minY = player.collisionRadii.y;
+    if (player.position.y < minY) {
+      player.position.y = minY;
       player.velocity.y = Math.max(0, player.velocity.y);
     }
   }
