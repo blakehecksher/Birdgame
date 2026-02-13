@@ -26,6 +26,7 @@ export class LobbyUI {
   private joinBtn: HTMLButtonElement;
   private connectBtn: HTMLButtonElement;
   private backBtn: HTMLButtonElement;
+  private hostBackBtn: HTMLButtonElement;
   private peerIdDisplay: HTMLInputElement;
   private peerIdInput: HTMLInputElement;
   private usernameInput: HTMLInputElement;
@@ -40,6 +41,7 @@ export class LobbyUI {
   private personalBestBadge: HTMLElement;
 
   private onHostCallback: (() => void) | null = null;
+  private onHostCancelCallback: (() => void) | null = null;
   private onJoinCallback: ((peerId: string) => void) | null = null;
   private fallbackUsername: string = createFallbackUsername();
   private pendingRoomCode: string | null = null;
@@ -55,6 +57,7 @@ export class LobbyUI {
     this.joinBtn = document.getElementById('join-btn') as HTMLButtonElement;
     this.connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
     this.backBtn = document.getElementById('back-btn') as HTMLButtonElement;
+    this.hostBackBtn = document.getElementById('host-back-btn') as HTMLButtonElement;
     this.peerIdDisplay = document.getElementById('peer-id-display') as HTMLInputElement;
     this.peerIdInput = document.getElementById('peer-id-input') as HTMLInputElement;
     this.usernameInput = document.getElementById('username-input') as HTMLInputElement;
@@ -103,6 +106,12 @@ export class LobbyUI {
     this.backBtn.addEventListener('click', () => {
       this.showMainMenu();
     });
+    this.hostBackBtn.addEventListener('click', () => {
+      this.showMainMenu();
+      if (this.onHostCancelCallback) {
+        this.onHostCancelCallback();
+      }
+    });
 
     // Enter key in join input
     this.peerIdInput.addEventListener('keypress', (e) => {
@@ -110,18 +119,16 @@ export class LobbyUI {
         this.connectBtn.click();
       }
     });
-
     // Copy link button
     const copyBtn = document.getElementById('copy-link-btn');
     if (copyBtn) {
       copyBtn.addEventListener('click', () => {
         const linkEl = document.getElementById('room-link') as HTMLInputElement;
-        if (linkEl) {
-          navigator.clipboard.writeText(linkEl.value).then(() => {
-            copyBtn.textContent = 'Copied!';
-            setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
-          });
-        }
+        if (!linkEl) return;
+        navigator.clipboard.writeText(linkEl.value).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+        });
       });
     }
 
@@ -180,6 +187,7 @@ export class LobbyUI {
    */
   public showMainMenu(): void {
     this.resetJoinControls();
+    this.setHostStatus('Waiting for player to join...');
     this.lobbyMenu.classList.remove('hidden');
     this.hostScreen.classList.add('hidden');
     this.joinScreen.classList.add('hidden');
@@ -301,6 +309,10 @@ export class LobbyUI {
     this.onHostCallback = callback;
   }
 
+  public onHostCancel(callback: () => void): void {
+    this.onHostCancelCallback = callback;
+  }
+
   /**
    * Register callback for join button
    */
@@ -333,15 +345,34 @@ export class LobbyUI {
   ): void {
     this.leaderboardFat.innerHTML = fattest.length
       ? fattest
-          .map((row, idx) => `<li>${idx + 1}. ${row.username} - ${row.value.toFixed(1)}</li>`)
+          .map((row, idx) => this.renderLeaderboardRow(
+            `${idx + 1}. ${this.escapeHtml(row.username)}`,
+            `${row.value.toFixed(1)} lbs`
+          ))
           .join('')
-      : '<li>No entries yet</li>';
+      : '<li class="leaderboard-empty">No entries yet</li>';
 
     this.leaderboardKill.innerHTML = fastest.length
       ? fastest
-          .map((row, idx) => `<li>${idx + 1}. ${row.username} - ${this.formatSeconds(row.value)}</li>`)
+          .map((row, idx) => this.renderLeaderboardRow(
+            `${idx + 1}. ${this.escapeHtml(row.username)}`,
+            this.formatSeconds(row.value)
+          ))
           .join('')
-      : '<li>No entries yet</li>';
+      : '<li class="leaderboard-empty">No entries yet</li>';
+  }
+
+  private renderLeaderboardRow(left: string, right: string): string {
+    return `<li><span class="leader-left">${left}</span><span class="leader-dots" aria-hidden="true"></span><span class="leader-right">${right}</span></li>`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private formatSeconds(totalSeconds: number): string {
@@ -359,3 +390,4 @@ export class LobbyUI {
     this.personalBestBadge.style.display = show ? 'inline-block' : 'none';
   }
 }
+

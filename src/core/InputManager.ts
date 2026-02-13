@@ -1,3 +1,6 @@
+import { TouchController } from '../input/TouchController';
+import { isTouchDevice } from '../input/mobileDetect';
+
 export interface InputState {
   forward: number; // 0 to 1 (W only)
   strafe: number; // -1 to 1 (bank input: A/D)
@@ -5,6 +8,7 @@ export interface InputState {
   mouseX: number; // Mouse delta X
   mouseY: number; // Mouse delta Y
   scrollDelta: number; // Scroll wheel delta for camera zoom
+  mobilePitchAutoCenter?: boolean; // Touch/mobile-only pitch recenter behavior
 }
 
 export class InputManager {
@@ -19,9 +23,16 @@ export class InputManager {
   private readonly pointerLockHandler: () => void;
   private readonly mouseMoveHandler: (e: MouseEvent) => void;
   private readonly wheelHandler: (e: WheelEvent) => void;
+  private pointerLockEnabled: boolean = false;
+  private touchController: TouchController | null = null;
+  public readonly isMobile: boolean;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+    this.isMobile = isTouchDevice();
+    if (this.isMobile) {
+      this.touchController = new TouchController();
+    }
     this.keyDownHandler = (e) => this.onKeyDown(e);
     this.keyUpHandler = (e) => this.onKeyUp(e);
     this.canvasClickHandler = () => this.requestPointerLock();
@@ -59,7 +70,7 @@ export class InputManager {
   }
 
   private requestPointerLock(): void {
-    if (!this.isPointerLocked) {
+    if (this.pointerLockEnabled && !this.isPointerLocked) {
       this.canvas.requestPointerLock();
     }
   }
@@ -83,7 +94,7 @@ export class InputManager {
   /**
    * Get current input state
    */
-  public getInputState(): InputState {
+  public getInputState(deltaTime: number = 1 / 60): InputState {
     const input: InputState = {
       forward: 0,
       strafe: 0,
@@ -109,6 +120,18 @@ export class InputManager {
     const keyboardPitchDelta = 10;
     if (this.keys.has('ArrowUp')) input.mouseY -= keyboardPitchDelta;
     if (this.keys.has('ArrowDown')) input.mouseY += keyboardPitchDelta;
+
+    // Merge touch input (additive so Bluetooth keyboard still works on mobile)
+    if (this.touchController) {
+      const touch = this.touchController.getInputState(deltaTime);
+      input.forward = Math.max(input.forward, touch.forward);
+      input.strafe = Math.max(-1, Math.min(1, input.strafe + touch.strafe));
+      input.ascend = Math.max(-1, Math.min(1, input.ascend + touch.ascend));
+      input.mouseY += touch.mouseY;
+      if (touch.mobilePitchAutoCenter) {
+        input.mobilePitchAutoCenter = true;
+      }
+    }
 
     // Reset deltas after reading
     this.mouseDelta.x = 0;
@@ -142,6 +165,16 @@ export class InputManager {
   }
 
   /**
+   * Enable or disable pointer lock requests from canvas clicks.
+   */
+  public setPointerLockEnabled(enabled: boolean): void {
+    this.pointerLockEnabled = enabled;
+    if (!enabled) {
+      this.releasePointerLock();
+    }
+  }
+
+  /**
    * Clear pressed keys and pending mouse deltas.
    */
   public resetInputState(): void {
@@ -151,6 +184,14 @@ export class InputManager {
     this.scrollDelta = 0;
   }
 
+  public showTouchControls(): void {
+    this.touchController?.show();
+  }
+
+  public hideTouchControls(): void {
+    this.touchController?.hide();
+  }
+
   public dispose(): void {
     window.removeEventListener('keydown', this.keyDownHandler);
     window.removeEventListener('keyup', this.keyUpHandler);
@@ -158,5 +199,6 @@ export class InputManager {
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     document.removeEventListener('mousemove', this.mouseMoveHandler);
     this.canvas.removeEventListener('wheel', this.wheelHandler);
+    this.touchController?.dispose();
   }
 }

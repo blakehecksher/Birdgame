@@ -32,14 +32,20 @@ export class Hawk {
     return this.isDiving;
   }
 
-  public update(deltaTime: number): void {
+  public update(deltaTime: number, applyEnergyDrain: boolean = true): void {
     // Check dive state: diving when pitch is significantly negative (looking down)
     const pitch = this.player.rotation.x;
     this.isDiving = pitch < -0.15 && this.player.velocity.y < -0.5;
 
-    // Extra energy drain while diving
-    const drainMult = this.isDiving ? GAME_CONFIG.HAWK_DIVE_ENERGY_DRAIN_MULT : 1.0;
-    this.setEnergy(this.energy - (GAME_CONFIG.HAWK_ENERGY_DRAIN_RATE * drainMult * deltaTime));
+    if (applyEnergyDrain) {
+      // Extra energy drain while diving
+      const drainMult = this.isDiving ? GAME_CONFIG.HAWK_DIVE_ENERGY_DRAIN_MULT : 1.0;
+      this.setEnergy(this.energy - (GAME_CONFIG.HAWK_ENERGY_DRAIN_RATE * drainMult * deltaTime));
+      return;
+    }
+
+    // Keep local speed multiplier and dive state responsive on non-authoritative peers.
+    this.applyToPlayer();
   }
 
   public reset(): void {

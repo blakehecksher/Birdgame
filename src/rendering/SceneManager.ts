@@ -1,14 +1,17 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from '../config/constants';
+import { getQualityTier, QualityTier } from '../input/mobileDetect';
 
 export class SceneManager {
   public scene: THREE.Scene;
   public camera: THREE.PerspectiveCamera;
   public renderer: THREE.WebGLRenderer;
   private canvas: HTMLCanvasElement;
+  private qualityTier: QualityTier;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+    this.qualityTier = getQualityTier();
 
     // Create scene
     this.scene = new THREE.Scene();
@@ -29,9 +32,14 @@ export class SceneManager {
       antialias: true,
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const maxRatio = this.qualityTier === 'low' ? GAME_CONFIG.MOBILE_PIXEL_RATIO_CAP : 2;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxRatio));
+    if (this.qualityTier === 'low' && !GAME_CONFIG.MOBILE_SHADOWS_ENABLED) {
+      this.renderer.shadowMap.enabled = false;
+    } else {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
 
     // Set up lighting
     this.setupLighting();
@@ -54,8 +62,9 @@ export class SceneManager {
     directionalLight.castShadow = true;
 
     // Configure shadow properties
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
+    const shadowSize = this.qualityTier === 'low' ? GAME_CONFIG.MOBILE_SHADOW_MAP_SIZE : 2048;
+    directionalLight.shadow.mapSize.width = shadowSize;
+    directionalLight.shadow.mapSize.height = shadowSize;
     directionalLight.shadow.camera.near = 0.5;
     directionalLight.shadow.camera.far = 500;
     directionalLight.shadow.camera.left = -100;

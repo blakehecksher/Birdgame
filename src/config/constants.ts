@@ -45,14 +45,15 @@ export const GAME_CONFIG = {
   PIGEON_COLLISION_RY: 0.35,  // vertical half-extent
   PIGEON_COLLISION_RZ: 0.45,  // side-to-side half-extent
 
-  HAWK_COLLISION_RX: 0.9,     // longer body
-  HAWK_COLLISION_RY: 0.3,     // sleeker profile
-  HAWK_COLLISION_RZ: 0.55,    // wider wingspan
+  HAWK_COLLISION_RX: 1.0,     // longer body
+  HAWK_COLLISION_RY: 0.5,     // sleeker profile
+  HAWK_COLLISION_RZ: 0.7,    // wider wingspan
 
-  SHOW_COLLISION_DEBUG: false,  // render transparent collision ellipsoid on players
+  SHOW_COLLISION_DEBUG: false,  // render transparent collision bounds on players and NPCs
 
   // Player physics
   AIR_RESISTANCE: 0.9, // Velocity multiplier per frame
+  GROUND_SPEED_MULTIPLIER: 0.2, // Grounded players move at 20% normal horizontal speed
 
   // Camera settings
   CAMERA_DISTANCE: 5,
@@ -85,13 +86,13 @@ export const GAME_CONFIG = {
   NPC_PIGEON_COUNT: 10,
   NPC_RAT_COUNT: 10,
   NPC_SQUIRREL_COUNT: 8,
-  NPC_PIGEON_ENERGY: 25,
-  NPC_RAT_ENERGY: 35,
-  NPC_SQUIRREL_ENERGY: 50,
+  NPC_PIGEON_ENERGY: 75,
+  NPC_RAT_ENERGY: 50,
+  NPC_SQUIRREL_ENERGY: 75,
   NPC_PIGEON_RESPAWN: 45,
   NPC_RAT_RESPAWN: 30,
   NPC_SQUIRREL_RESPAWN: 35,
-  NPC_PIGEON_FLEE_RANGE: 15,
+  NPC_PIGEON_FLEE_RANGE: 5,
   NPC_RAT_FLEE_RANGE: 10,
   NPC_SQUIRREL_FLEE_RANGE: 12,
   NPC_PIGEON_SPEED: 2.0,
@@ -106,9 +107,10 @@ export const GAME_CONFIG = {
   NPC_PIGEON_EAT_TIME: 1.5,
   NPC_RAT_EAT_TIME: 2.0,
   NPC_SQUIRREL_EAT_TIME: 2.4,
-  NPC_PIGEON_RADIUS: 0.45,
-  NPC_RAT_RADIUS: 0.3,
-  NPC_SQUIRREL_RADIUS: 0.5,
+  NPC_COLLISION_RADIUS_MULT: 1.5, // Global NPC hitbox scale multiplier
+  NPC_PIGEON_RADIUS: 0.6,
+  NPC_RAT_RADIUS: 0.4,
+  NPC_SQUIRREL_RADIUS: 0.6,
 
   // Environment — 10x10 city grid
   GROUND_SIZE: 400,
@@ -121,6 +123,28 @@ export const GAME_CONFIG = {
   PARK_TREES_MIN: 2,
   PARK_TREES_MAX: 5,
   PARK_BENCHES_MAX: 2,
+
+  // Touch controls
+  TOUCH_DEADZONE: 0.14,
+  TOUCH_STRAFE_SCALE: 1.0,
+  TOUCH_PITCH_SCALE: 9.5,
+  TOUCH_STICK_RESPONSE_EXPONENT: 1.75,
+  TOUCH_STICK_FOLLOW_RATE: 16.0,
+  TOUCH_STICK_RETURN_RATE: 10.0,
+  TOUCH_THRUST_FOLLOW_RATE: 18.0,
+  TOUCH_THRUST_RETURN_RATE: 7.0,
+  TOUCH_MICRO_SNAP: 0.03,
+  TOUCH_PITCH_CENTER_RATE: 6.0,
+  TOUCH_PITCH_CENTER_INPUT_THRESHOLD: 0.06,
+  TOUCH_PITCH_CENTER_SNAP: 0.004,
+  TOUCH_STICK_RADIUS: 60,
+  TOUCH_KNOB_RADIUS: 25,
+  TOUCH_BUTTON_SIZE: 56,
+
+  // Mobile performance
+  MOBILE_PIXEL_RATIO_CAP: 1.5,
+  MOBILE_SHADOWS_ENABLED: false,
+  MOBILE_SHADOW_MAP_SIZE: 512,
 } as const;
 
 // Food types

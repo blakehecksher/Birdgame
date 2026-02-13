@@ -15,12 +15,16 @@ export interface SoundManifestEntry {
   optional?: boolean;
 }
 
-interface ActiveSound {
-  source: AudioBufferSourceNode;
-  gain: GainNode;
-}
-
 export type VolumeChannel = 'master' | 'sfx' | 'ambient';
+type SoundChannel = 'sfx' | 'ambient';
+
+interface ActiveSound {
+  channel: SoundChannel;
+  volume: number;
+  source?: AudioBufferSourceNode;
+  gain?: GainNode;
+  element?: HTMLAudioElement;
+}
 
 class AudioManagerSingleton {
   private ctx: AudioContext | null = null;
@@ -29,6 +33,7 @@ class AudioManagerSingleton {
   private ambientGain: GainNode | null = null;
 
   private bufferCache = new Map<string, AudioBuffer>();
+  private mediaFallbackCache = new Map<string, string>();
   private activeSounds = new Map<string, ActiveSound>();
 
   private volumes: Record<VolumeChannel, number> = {
@@ -39,6 +44,7 @@ class AudioManagerSingleton {
 
   private initialized = false;
   private resumeHandler: (() => void) | null = null;
+  private readonly resumeEvents = ['click', 'keydown', 'touchstart', 'touchend', 'pointerdown'] as const;
 
   /**
    * Initialize the AudioContext and gain graph.
@@ -47,6 +53,7 @@ class AudioManagerSingleton {
   public init(): void {
     if (this.initialized) return;
 
+    this.configureAudioSession();
     this.ctx = new AudioContext();
 
     // Gain graph: source → channel gain → master gain → destination
@@ -65,17 +72,75 @@ class AudioManagerSingleton {
     this.initialized = true;
 
     // Handle browser autoplay policy: resume context on first user interaction
-    if (this.ctx.state === 'suspended') {
+    if (this.ctx.state !== 'running') {
       this.resumeHandler = () => {
-        this.ctx?.resume();
-        if (this.resumeHandler) {
-          document.removeEventListener('click', this.resumeHandler);
-          document.removeEventListener('keydown', this.resumeHandler);
-          this.resumeHandler = null;
-        }
+        void this.resumeContext();
       };
-      document.addEventListener('click', this.resumeHandler);
-      document.addEventListener('keydown', this.resumeHandler);
+      this.addResumeListeners();
+    }
+  }
+
+  /**
+   * Best-effort resume for browsers that gate audio behind user interaction.
+   * Listeners remain active until resume succeeds.
+   */
+  private async resumeContext(): Promise<void> {
+    if (!this.ctx) return;
+    this.configureAudioSession();
+    const ctx = this.ctx;
+    try {
+      if (ctx.state !== 'running') {
+        await ctx.resume();
+      }
+    } catch {
+      return;
+    }
+    if (ctx.state === 'running') {
+      this.removeResumeListeners();
+    }
+  }
+
+  private addResumeListeners(): void {
+    if (!this.resumeHandler) return;
+    for (const eventName of this.resumeEvents) {
+      document.addEventListener(eventName, this.resumeHandler, { capture: true });
+    }
+  }
+
+  private removeResumeListeners(): void {
+    if (!this.resumeHandler) return;
+    for (const eventName of this.resumeEvents) {
+      document.removeEventListener(eventName, this.resumeHandler, true);
+    }
+    this.resumeHandler = null;
+  }
+
+  /**
+   * Public manual resume hook for explicit user-gesture call sites.
+   */
+  public resume(): void {
+    void this.resumeContext();
+  }
+
+  /**
+   * iOS Safari/WebKit may route WebAudio through an "ambient" session that is
+   * muted by Silent mode. Where supported (iOS 17+), request playback session.
+   */
+  private configureAudioSession(): void {
+    type NavigatorWithAudioSession = Navigator & {
+      audioSession?: { type?: string };
+    };
+
+    const nav = navigator as NavigatorWithAudioSession;
+    const session = nav.audioSession;
+    if (!session) return;
+
+    try {
+      if (session.type !== 'playback') {
+        session.type = 'playback';
+      }
+    } catch {
+      // Best-effort only; unsupported/blocked implementations should no-op.
     }
   }
 
@@ -88,12 +153,20 @@ class AudioManagerSingleton {
     const base = import.meta.env.BASE_URL;
 
     const tasks = entries.map(async (entry) => {
+      const url = `${base}${entry.path}`;
       try {
-        const response = await fetch(`${base}${entry.path}`);
+        const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        this.mediaFallbackCache.set(entry.key, url);
         const arrayBuffer = await response.arrayBuffer();
-        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-        this.bufferCache.set(entry.key, audioBuffer);
+        try {
+          const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+          this.bufferCache.set(entry.key, audioBuffer);
+        } catch (error) {
+          if (!entry.optional) {
+            console.error(`Failed to decode sound: ${entry.path}`, error);
+          }
+        }
       } catch (error) {
         if (!entry.optional) {
           console.error(`Failed to load sound: ${entry.path}`, error);
@@ -110,8 +183,16 @@ class AudioManagerSingleton {
    * Returns a playback ID that can be used to stop it early.
    */
   public play(key: string, channel: 'sfx' | 'ambient' = 'sfx', volume = 1.0): string | null {
+    if (!this.ctx) return this.playMediaFallback(key, channel, volume, false);
+
+    if (this.ctx.state !== 'running') {
+      void this.resumeContext();
+      const fallbackId = this.playMediaFallback(key, channel, volume, false);
+      if (fallbackId) return fallbackId;
+    }
+
     const buffer = this.bufferCache.get(key);
-    if (!buffer || !this.ctx) return null;
+    if (!buffer) return this.playMediaFallback(key, channel, volume, false);
 
     const channelGain = channel === 'ambient' ? this.ambientGain! : this.sfxGain!;
 
@@ -125,7 +206,7 @@ class AudioManagerSingleton {
     gain.connect(channelGain);
 
     const id = `${key}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    this.activeSounds.set(id, { source, gain });
+    this.activeSounds.set(id, { channel, volume, source, gain });
 
     source.onended = () => {
       this.activeSounds.delete(id);
@@ -140,8 +221,17 @@ class AudioManagerSingleton {
    * Returns a stable ID for stopping later.
    */
   public playLoop(key: string, channel: 'sfx' | 'ambient' = 'ambient', volume = 1.0): string | null {
+    const id = `loop_${key}`;
+    if (!this.ctx) return this.playMediaFallback(key, channel, volume, true, id);
+
+    if (this.ctx.state !== 'running') {
+      void this.resumeContext();
+      const fallbackId = this.playMediaFallback(key, channel, volume, true, id);
+      if (fallbackId) return fallbackId;
+    }
+
     const buffer = this.bufferCache.get(key);
-    if (!buffer || !this.ctx) return null;
+    if (!buffer) return this.playMediaFallback(key, channel, volume, true, id);
 
     const channelGain = channel === 'ambient' ? this.ambientGain! : this.sfxGain!;
 
@@ -155,13 +245,46 @@ class AudioManagerSingleton {
     source.connect(gain);
     gain.connect(channelGain);
 
-    const id = `loop_${key}`;
-
     // Stop existing loop with same key
     this.stop(id);
 
-    this.activeSounds.set(id, { source, gain });
+    this.activeSounds.set(id, { channel, volume, source, gain });
     source.start();
+    return id;
+  }
+
+  private playMediaFallback(
+    key: string,
+    channel: SoundChannel,
+    volume: number,
+    loop: boolean,
+    idOverride?: string
+  ): string | null {
+    const src = this.mediaFallbackCache.get(key);
+    if (!src) return null;
+
+    const id = idOverride ?? `${key}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    if (idOverride) {
+      this.stop(id);
+    }
+
+    const audio = new Audio(src);
+    audio.loop = loop;
+    audio.preload = 'auto';
+    audio.volume = this.getEffectiveVolume(channel, volume);
+
+    this.activeSounds.set(id, { channel, volume, element: audio });
+
+    audio.onended = () => {
+      if (!loop) {
+        this.activeSounds.delete(id);
+      }
+    };
+
+    void audio.play().catch(() => {
+      this.activeSounds.delete(id);
+    });
+
     return id;
   }
 
@@ -172,11 +295,18 @@ class AudioManagerSingleton {
     const active = this.activeSounds.get(id);
     if (!active) return;
 
-    try {
-      active.source.stop();
-    } catch {
-      // Already stopped
+    if (active.source) {
+      try {
+        active.source.stop();
+      } catch {
+        // Already stopped
+      }
     }
+    if (active.element) {
+      active.element.pause();
+      active.element.currentTime = 0;
+    }
+
     this.activeSounds.delete(id);
   }
 
@@ -185,14 +315,18 @@ class AudioManagerSingleton {
    */
   public stopAll(channel?: 'sfx' | 'ambient'): void {
     for (const [id, active] of this.activeSounds) {
-      if (channel) {
-        const isAmbient = id.startsWith('loop_');
-        if ((channel === 'ambient') !== isAmbient) continue;
+      if (channel && active.channel !== channel) continue;
+
+      if (active.source) {
+        try {
+          active.source.stop();
+        } catch {
+          // Already stopped
+        }
       }
-      try {
-        active.source.stop();
-      } catch {
-        // Already stopped
+      if (active.element) {
+        active.element.pause();
+        active.element.currentTime = 0;
       }
       this.activeSounds.delete(id);
     }
@@ -215,6 +349,12 @@ class AudioManagerSingleton {
         if (this.ambientGain) this.ambientGain.gain.value = this.volumes.ambient;
         break;
     }
+
+    for (const active of this.activeSounds.values()) {
+      if (active.element) {
+        active.element.volume = this.getEffectiveVolume(active.channel, active.volume);
+      }
+    }
   }
 
   /**
@@ -228,7 +368,12 @@ class AudioManagerSingleton {
    * Check if a sound key is loaded and available.
    */
   public has(key: string): boolean {
-    return this.bufferCache.has(key);
+    return this.bufferCache.has(key) || this.mediaFallbackCache.has(key);
+  }
+
+  private getEffectiveVolume(channel: SoundChannel, soundVolume: number): number {
+    const v = soundVolume * this.volumes[channel] * this.volumes.master;
+    return Math.max(0, Math.min(1, v));
   }
 
   /**
@@ -237,11 +382,7 @@ class AudioManagerSingleton {
   public dispose(): void {
     this.stopAll();
 
-    if (this.resumeHandler) {
-      document.removeEventListener('click', this.resumeHandler);
-      document.removeEventListener('keydown', this.resumeHandler);
-      this.resumeHandler = null;
-    }
+    this.removeResumeListeners();
 
     if (this.ctx) {
       this.ctx.close();
@@ -249,6 +390,7 @@ class AudioManagerSingleton {
     }
 
     this.bufferCache.clear();
+    this.mediaFallbackCache.clear();
     this.masterGain = null;
     this.sfxGain = null;
     this.ambientGain = null;

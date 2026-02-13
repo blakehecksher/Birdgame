@@ -90,6 +90,7 @@ export class Game {
   private countdownHideTimeoutId: number | null = null;
   private countdownActive: boolean = false;
   private readonly roundCountdownSeconds: number = 3;
+  private hostRequestToken: number = 0;
 
   constructor() {
     // Get canvas
@@ -119,6 +120,7 @@ export class Game {
 
     // Set up lobby callbacks
     this.lobbyUI.onHost(() => this.hostGame());
+    this.lobbyUI.onHostCancel(() => this.cancelPendingHost());
     this.lobbyUI.onJoin((peerId) => this.joinGame(peerId));
 
     // Set up score UI callbacks
@@ -333,15 +335,25 @@ export class Game {
    * Host a new game
    */
   private async hostGame(): Promise<void> {
+    const requestToken = ++this.hostRequestToken;
     try {
+      AudioManager.resume();
       this.lobbyUI.showWaiting('Initializing...');
       this.lobbyUI.getEffectiveUsername();
 
       const roomCode = this.generateRoomCode();
 
       // Initialize peer connection as host with room code
-      this.peerConnection = new PeerConnection();
-      const peerId = await this.peerConnection.initializeAsHost(roomCode);
+      const peerConnection = new PeerConnection();
+      this.peerConnection = peerConnection;
+      const peerId = await peerConnection.initializeAsHost(roomCode);
+      if (requestToken !== this.hostRequestToken) {
+        peerConnection.disconnect();
+        if (this.peerConnection === peerConnection) {
+          this.peerConnection = null;
+        }
+        return;
+      }
 
       // Display shareable room link
       this.lobbyUI.displayRoomLink(roomCode);
@@ -350,7 +362,7 @@ export class Game {
       this.gameState = new GameState(true, peerId);
 
       // Set up connection callbacks
-      this.peerConnection.onConnected((remotePeerId) => {
+      peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
         const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
@@ -378,9 +390,24 @@ export class Game {
 
       this.lobbyUI.showWaiting('Waiting for player to join...');
     } catch (error) {
+      if (requestToken !== this.hostRequestToken) {
+        return;
+      }
       console.error('Failed to host game:', error);
       this.lobbyUI.showError('Failed to create game. Please try again.');
     }
+  }
+
+  private cancelPendingHost(): void {
+    if (this.isGameStarted) return;
+
+    this.hostRequestToken += 1;
+    if (this.peerConnection) {
+      this.peerConnection.disconnect();
+      this.peerConnection = null;
+    }
+    this.networkManager = null;
+    this.gameState = null;
   }
 
   /**
@@ -388,6 +415,7 @@ export class Game {
    */
   private async joinGame(hostPeerId: string): Promise<void> {
     try {
+      AudioManager.resume();
       this.lobbyUI.getEffectiveUsername();
       this.lobbyUI.showConnecting();
 
@@ -569,16 +597,45 @@ export class Game {
     const volumeBtn = document.getElementById('volume-btn');
     if (volumeBtn) volumeBtn.style.display = 'flex';
     this.applyDebugConsoleVisibility();
+    if (!this.inputManager.isMobile) {
+      this.inputManager.setPointerLockEnabled(false);
+    }
 
-    // Show instructions overlay (dismissed on click)
+    // Show instructions overlay (dismissed on click/tap)
     const instructions = document.getElementById('instructions');
     if (instructions) {
+      // Show mobile-specific control instructions
+      if (this.inputManager.isMobile) {
+        const controlsDiv = instructions.querySelector('.controls');
+        if (controlsDiv) {
+          controlsDiv.innerHTML = `
+            <div><span>GO button</span> Forward thrust</div>
+            <div><span>Right stick</span> Pitch & bank</div>
+            <div><span>UP</span> Fly higher</div>
+            <div><span>DN</span> Fly lower</div>
+          `;
+        }
+        const dismissEl = instructions.querySelector('.dismiss');
+        if (dismissEl) dismissEl.textContent = 'Tap to start';
+      }
+
       instructions.style.display = 'block';
       const dismiss = () => {
         instructions.style.display = 'none';
+        if (!this.inputManager.isMobile) {
+          this.inputManager.setPointerLockEnabled(true);
+        }
+        this.inputManager.showTouchControls();
         instructions.removeEventListener('click', dismiss);
+        instructions.removeEventListener('touchstart', dismiss);
       };
       instructions.addEventListener('click', dismiss);
+      instructions.addEventListener('touchstart', dismiss);
+    } else {
+      if (!this.inputManager.isMobile) {
+        this.inputManager.setPointerLockEnabled(true);
+      }
+      this.inputManager.showTouchControls();
     }
 
     // Start first round immediately for connection reliability.
@@ -735,7 +792,7 @@ export class Game {
     if (!this.gameState || !this.localPlayer) return;
 
     // Get input (locked during countdown)
-    const rawInput = this.inputManager.getInputState();
+    const rawInput = this.inputManager.getInputState(deltaTime);
     const input = this.countdownActive
       ? { ...rawInput, forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0 }
       : rawInput;
@@ -763,10 +820,8 @@ export class Game {
       }
     }
 
-    // Authoritative stat simulation runs on host
-    if (this.gameState.isHost) {
-      this.updateRoleStats(this.localPlayer, deltaTime);
-    }
+    // Keep local role behavior responsive on all peers; host remains authoritative.
+    this.updateRoleStats(this.localPlayer, deltaTime, this.gameState.isHost);
 
     if (this.foodSpawner) {
       this.foodSpawner.update(deltaTime);
@@ -830,7 +885,7 @@ export class Game {
             }
           }
 
-          this.updateRoleStats(remotePlayer, deltaTime);
+          this.updateRoleStats(remotePlayer, deltaTime, true);
 
           const remotePlayerState = this.gameState.players.get(peerId);
           if (remotePlayerState) {
@@ -1154,6 +1209,7 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    this.inputManager.hideTouchControls();
     const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
@@ -1200,6 +1256,7 @@ export class Game {
     AudioManager.play(SFX.PIGEON_WINS, 'sfx');
 
     // Show score screen
+    this.inputManager.hideTouchControls();
     const bestCallouts = this.updatePersonalBestsForRound('pigeon', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'pigeon',
@@ -1244,6 +1301,7 @@ export class Game {
       AudioManager.play(SFX.PIGEON_WINS, 'sfx');
     }
 
+    this.inputManager.hideTouchControls();
     const bestCallouts = this.updatePersonalBestsForRound(winner === 'pigeon' ? 'pigeon' : 'hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       winner === 'pigeon' ? 'pigeon' : 'hawk',
@@ -1335,6 +1393,7 @@ export class Game {
     this.lobbyUI.showPersonalBestBadge(false);
     this.countdownActive = true;
     this.inputManager.resetInputState();
+    this.inputManager.showTouchControls();
     this.networkManager?.resetRemoteInput();
 
     const overlay = document.getElementById('round-countdown');
@@ -1434,14 +1493,14 @@ export class Game {
   /**
    * Update per-role stats on host.
    */
-  private updateRoleStats(player: Player, deltaTime: number): void {
+  private updateRoleStats(player: Player, deltaTime: number, authoritative: boolean): void {
     const peerId = this.getPeerIdForPlayer(player);
     if (!peerId || !this.gameState) return;
     const hawk = peerId === this.gameState.localPeerId
       ? this.localHawk
       : (this.remoteHawks.get(peerId) ?? null);
     if (hawk) {
-      hawk.update(deltaTime);
+      hawk.update(deltaTime, authoritative);
     }
   }
 
@@ -1856,6 +1915,7 @@ export class Game {
     AudioManager.play(SFX.HAWK_WINS, 'sfx');
 
     // Show score screen
+    this.inputManager.hideTouchControls();
     const bestCallouts = this.updatePersonalBestsForRound('hawk', pigeonWeight, survivalTime);
     this.scoreUI.showRoundEnd(
       'hawk',
@@ -2088,7 +2148,7 @@ export class Game {
   private showFoodPopup(foodType: FoodType, weightGain: number, energyGain: number): void {
     if (!this.localPlayer) return;
     if (this.localPlayer.role === PlayerRole.PIGEON && foodType !== FoodType.RAT) {
-      this.showEventPopup(`+${weightGain.toFixed(1)} weight`, 'good');
+      this.showEventPopup(`+${weightGain.toFixed(1)} lbs`, 'good');
       return;
     }
     if (this.localPlayer.role === PlayerRole.HAWK && foodType === FoodType.RAT) {
@@ -2137,6 +2197,8 @@ export class Game {
     if (this.windLoopId) AudioManager.stop(this.windLoopId);
     AudioManager.dispose();
     this.sceneManager.dispose();
+    this.inputManager.setPointerLockEnabled(false);
+    this.inputManager.hideTouchControls();
     this.inputManager.dispose();
     if (this.localPlayer) this.localPlayer.dispose();
     this.remotePlayers.forEach((remotePlayer) => remotePlayer.dispose());

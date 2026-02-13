@@ -60,7 +60,7 @@ export class ScoreUI {
 
     let detailsHTML = `
       <div class="score-item">
-        <strong>Pigeon Weight:</strong> ${pigeonWeight.toFixed(1)} units
+        <strong>Pigeon Weight:</strong> ${pigeonWeight.toFixed(1)} lbs
       </div>
       <div class="score-item">
         <strong>Survival Time:</strong> ${timeStr}
@@ -70,7 +70,7 @@ export class ScoreUI {
         <strong>Cumulative Scores:</strong>
       </div>
       <div class="score-item">
-        Pigeon - Total Weight: ${pigeonScore.totalWeight.toFixed(1)} | Rounds Won: ${pigeonScore.roundsWon}
+        Pigeon - Total Weight: ${pigeonScore.totalWeight.toFixed(1)} lbs | Rounds Won: ${pigeonScore.roundsWon}
       </div>
       <div class="score-item">
         Hawk - Avg Kill Time: ${this.getAverageKillTime(hawkScore.killTimes)} | Rounds Won: ${hawkScore.roundsWon}

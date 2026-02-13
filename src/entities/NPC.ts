@@ -45,6 +45,7 @@ export class NPC {
   public state: NPCState = NPCState.IDLE;
   public exists: boolean = true;
   public readonly radius: number;
+  private debugMesh: THREE.Mesh | null = null;
 
   // Client-side interpolation targets (set by applySnapshot, lerped each frame)
   private targetPosition: THREE.Vector3 = new THREE.Vector3();
@@ -83,6 +84,7 @@ export class NPC {
     } else {
       this.mesh.add(this.createFallbackMesh());
     }
+    this.updateDebugCollisionMesh();
     this.mesh.position.copy(this.position);
   }
 
@@ -328,14 +330,49 @@ export class NPC {
   }
 
   private getRadiusByType(type: NPCType): number {
+    const scale = GAME_CONFIG.NPC_COLLISION_RADIUS_MULT;
     switch (type) {
       case NPCType.PIGEON:
-        return GAME_CONFIG.NPC_PIGEON_RADIUS;
+        return GAME_CONFIG.NPC_PIGEON_RADIUS * scale;
       case NPCType.SQUIRREL:
-        return GAME_CONFIG.NPC_SQUIRREL_RADIUS;
+        return GAME_CONFIG.NPC_SQUIRREL_RADIUS * scale;
       default:
-        return GAME_CONFIG.NPC_RAT_RADIUS;
+        return GAME_CONFIG.NPC_RAT_RADIUS * scale;
     }
+  }
+
+  private getDebugColorByType(): number {
+    switch (this.type) {
+      case NPCType.PIGEON:
+        return 0x66ccff;
+      case NPCType.SQUIRREL:
+        return 0xffaa44;
+      default:
+        return 0xdd6666;
+    }
+  }
+
+  private updateDebugCollisionMesh(): void {
+    if (this.debugMesh) {
+      this.mesh.remove(this.debugMesh);
+      this.debugMesh.geometry.dispose();
+      (this.debugMesh.material as THREE.Material).dispose();
+      this.debugMesh = null;
+    }
+    if (!GAME_CONFIG.SHOW_COLLISION_DEBUG) return;
+
+    const geo = new THREE.SphereGeometry(1, 16, 12);
+    const mat = new THREE.MeshBasicMaterial({
+      color: this.getDebugColorByType(),
+      wireframe: true,
+      transparent: true,
+      opacity: 0.4,
+      depthTest: false,
+    });
+    this.debugMesh = new THREE.Mesh(geo, mat);
+    this.debugMesh.scale.setScalar(this.radius);
+    this.debugMesh.renderOrder = 998;
+    this.mesh.add(this.debugMesh);
   }
 
   private getGroundHeight(): number {

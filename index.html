@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Hawk & Pigeon</title>
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&display=swap');
@@ -61,6 +61,7 @@
         display: block;
         width: 100vw;
         height: 100vh;
+        touch-action: none;
       }
 
       #ui-overlay {
@@ -161,7 +162,8 @@
         z-index: 1;
         height: 100%;
         display: grid;
-        grid-template-rows: 5fr 3fr;
+        grid-template-rows: minmax(0, 5fr) minmax(0, 3fr);
+        min-height: 0;
       }
 
       #lobby h1 {
@@ -264,7 +266,8 @@
 
       #lobby-band {
         margin-top: 0;
-        padding: 0.7rem 0.9rem 1rem;
+        padding: 0rem 0.7rem 0rem 0.7rem;
+        min-height: 0;
         overflow: hidden;
         background: linear-gradient(
           180deg,
@@ -305,8 +308,9 @@
           "play leaderboard";
         column-gap: 12px;
         row-gap: 8px;
-        align-items: stretch;
+        align-items: start;
         height: auto;
+        min-height: 0;
       }
 
       #lobby-bottom-layout > .subtitle {
@@ -316,6 +320,7 @@
 
       #play-panel {
         grid-area: play;
+        align-self: stretch;
         background: linear-gradient(165deg, rgba(12, 28, 42, 0.65), rgba(6, 16, 28, 0.72));
         border: 1px solid rgba(156, 203, 233, 0.16);
         border-radius: 12px;
@@ -323,7 +328,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        height: auto;
+        height: 100%;
+        min-height: 0;
         backdrop-filter: blur(4px);
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
@@ -448,6 +454,9 @@
         padding: 10px 10px 14px;
         text-align: left;
         height: auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
         backdrop-filter: blur(4px);
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
@@ -465,8 +474,13 @@
 
       .leaderboard-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         gap: 8px;
+        min-height: 0;
+      }
+
+      .leaderboard-grid > div {
+        min-width: 0;
       }
 
       .leaderboard-grid h4 {
@@ -484,12 +498,43 @@
         min-height: 88px;
         max-height: 96px;
         overflow-y: auto;
+        overflow-x: hidden;
       }
 
       .leaderboard-list li {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
         font-size: 11px;
         color: #dbe5eb;
-        margin-bottom: 3px;
+        margin: 0px 10px 3px 0px;
+        white-space: nowrap;
+        min-width: 0;
+      }
+
+      .leaderboard-list li.leaderboard-empty {
+        display: block;
+      }
+
+      .leader-left {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .leader-dots {
+        flex: 1 1 auto;
+        min-width: 12px;
+        border-bottom: 1px dotted rgba(159, 194, 219, 0.65);
+        margin-bottom: 0.2em;
+      }
+
+      .leader-right {
+        flex: 0 0 auto;
+        color: #eef6ff;
+        padding-left: 2px;
       }
 
       #leaderboard-status {
@@ -548,7 +593,7 @@
         #lobby-band {
           margin-top: 0;
           min-height: 0;
-          padding: 0.2rem 0.7rem 0.2rem;
+          padding: 0rem 0.7rem 0rem 0.7rem;
           overflow-y: auto;
         }
 
@@ -562,7 +607,7 @@
         }
 
         #play-panel {
-          align-items: flex-start;
+          align-items: center;
         }
 
         .leaderboard-grid {
@@ -621,8 +666,15 @@
         min-width: 90px !important;
       }
 
-      #back-btn:hover {
+      #back-btn:hover,
+      #host-back-btn:hover {
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35) !important;
+      }
+
+      #host-back-btn {
+        background: linear-gradient(180deg, rgba(80, 95, 110, 0.7), rgba(55, 65, 78, 0.8)) !important;
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25) !important;
+        min-width: 90px !important;
       }
 
       #connect-btn {
@@ -638,8 +690,8 @@
 
       #hud {
         position: absolute;
-        top: 20px;
-        left: 20px;
+        top: max(20px, env(safe-area-inset-top, 20px));
+        left: max(20px, env(safe-area-inset-left, 20px));
         color: white;
         font-size: 16px;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
@@ -948,8 +1000,8 @@
       /* Volume controls */
       #volume-btn {
         position: absolute;
-        bottom: 20px;
-        right: 20px;
+        bottom: max(20px, env(safe-area-inset-bottom, 20px));
+        right: max(20px, env(safe-area-inset-right, 20px));
         width: 36px;
         height: 36px;
         background: rgba(0, 0, 0, 0.5);
@@ -1030,8 +1082,6 @@
         transform: translate(-50%, -50%);
         width: 70px;
         height: 70px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 50%;
         pointer-events: none;
         display: none;
         z-index: 5;
@@ -1048,30 +1098,6 @@
         transform: translate(-50%, -50%);
         box-shadow: 0 0 2px rgba(255, 255, 255, 0.25);
         transition: none;
-      }
-
-      /* Small crosshair lines at center */
-      #flight-indicator::before,
-      #flight-indicator::after {
-        content: '';
-        position: absolute;
-        background: rgba(255, 255, 255, 0.15);
-      }
-
-      #flight-indicator::before {
-        width: 1px;
-        height: 100%;
-        left: 50%;
-        top: 0;
-        transform: translateX(-50%);
-      }
-
-      #flight-indicator::after {
-        width: 100%;
-        height: 1px;
-        left: 0;
-        top: 50%;
-        transform: translateY(-50%);
       }
 
       #round-countdown {
@@ -1108,8 +1134,8 @@
 
       #event-feed {
         position: absolute;
-        left: 20px;
-        bottom: 20px;
+        left: max(20px, env(safe-area-inset-left, 20px));
+        bottom: max(20px, env(safe-area-inset-bottom, 20px));
         display: flex;
         flex-direction: column;
         gap: 6px;
@@ -1144,6 +1170,156 @@
         15% { opacity: 1; transform: translateY(0); }
         80% { opacity: 1; transform: translateY(0); }
         100% { opacity: 0; transform: translateY(-6px); }
+      }
+
+      /* ── Touch Controls ── */
+      #touch-controls {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        display: none;
+        z-index: 7;
+      }
+      #touch-controls > * {
+        pointer-events: auto;
+      }
+
+      .thrust-btn {
+        position: absolute;
+        bottom: max(80px, calc(env(safe-area-inset-bottom, 0px) + 80px));
+        left: max(22px, env(safe-area-inset-left, 22px));
+        width: 86px;
+        height: 86px;
+        border-radius: 50%;
+        background:
+          radial-gradient(circle at 30% 30%, rgba(132, 220, 255, 0.28), transparent 58%),
+          linear-gradient(165deg, rgba(35, 122, 158, 0.62), rgba(14, 70, 107, 0.82));
+        border: 2px solid rgba(169, 231, 255, 0.34);
+        color: rgba(234, 250, 255, 0.9);
+        font-size: 20px;
+        font-weight: 700;
+        font-family: 'Chakra Petch', sans-serif;
+        letter-spacing: 0.08em;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .thrust-btn.active {
+        background:
+          radial-gradient(circle at 30% 30%, rgba(180, 238, 255, 0.46), transparent 60%),
+          linear-gradient(165deg, rgba(42, 149, 192, 0.74), rgba(18, 88, 134, 0.9));
+        border-color: rgba(213, 245, 255, 0.72);
+        transform: scale(0.96);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+      }
+
+      .attitude-stick-base {
+        position: absolute;
+        bottom: max(80px, calc(env(safe-area-inset-bottom, 0px) + 80px));
+        right: max(22px, env(safe-area-inset-right, 22px));
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.08);
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .attitude-stick-knob {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.25);
+        border: 2px solid rgba(255, 255, 255, 0.4);
+        transform: translate(-50%, -50%);
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .touch-center-buttons {
+        position: absolute;
+        left: 50%;
+        bottom: max(96px, calc(env(safe-area-inset-bottom, 0px) + 96px));
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .touch-btn {
+        position: relative;
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 14px;
+        font-weight: 700;
+        font-family: 'Chakra Petch', sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .touch-btn.active {
+        background: rgba(255, 255, 255, 0.25);
+        border-color: rgba(255, 255, 255, 0.5);
+      }
+
+      @media (orientation: landscape) {
+        .thrust-btn {
+          left: max(18px, env(safe-area-inset-left, 18px));
+          bottom: max(40px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+        }
+
+        .attitude-stick-base {
+          right: max(18px, env(safe-area-inset-right, 18px));
+          bottom: max(40px, calc(env(safe-area-inset-bottom, 0px) + 40px));
+        }
+
+        .touch-center-buttons {
+          bottom: max(58px, calc(env(safe-area-inset-bottom, 0px) + 58px));
+        }
+      }
+
+      /* ── Mobile responsive overlay fixes ── */
+      @media (max-width: 640px) {
+        #score-screen {
+          min-width: auto !important;
+          width: 92vw;
+          padding: 1.5rem;
+        }
+        #score-screen h2 { font-size: 1.5rem; }
+
+        #instructions {
+          min-width: auto !important;
+          width: 92vw;
+          padding: 1.5rem;
+        }
+        #instructions h2 { font-size: 1.4rem; }
+
+        #disconnect-overlay {
+          min-width: auto !important;
+          width: 90vw;
+          padding: 1.5rem;
+        }
+
+        #event-feed { bottom: 220px; }
       }
     </style>
   </head>
@@ -1187,7 +1363,10 @@
                     <button id="copy-code-btn">Copy Code</button>
                   </div>
                   <input type="text" id="room-link" readonly />
-                  <button id="copy-link-btn">Copy Link</button>
+                  <div class="action-row">
+                    <button id="copy-link-btn">Copy Link</button>
+                    <button id="host-back-btn">Back</button>
+                  </div>
                   <input type="hidden" id="peer-id-display" />
                   <p id="host-status" class="screen-status">Waiting for player to join...</p>
                 </div>
@@ -1237,7 +1416,7 @@
       <div id="hud">
         <div class="stat" id="role-display">Role: -</div>
         <div class="stat" id="weight-display">
-          Weight: <span id="weight-value">1.0</span>
+          Weight: <span id="weight-value">1.0</span> lbs
         </div>
         <div class="stat" id="energy-display">
           Energy: <span id="energy-value">100</span>

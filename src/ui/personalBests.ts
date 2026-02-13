@@ -81,7 +81,7 @@ export function updatePersonalBest(
 }
 
 export function formatBestWeight(value: number | null): string {
-  return value === null ? '--' : `${value.toFixed(1)} units`;
+  return value === null ? '--' : `${value.toFixed(1)} lbs`;
 }
 
 export function formatBestTime(value: number | null): string {

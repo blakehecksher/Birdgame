@@ -128,6 +128,7 @@ export class NetworkManager {
     existing.axes.forward = message.input.forward;
     existing.axes.strafe = message.input.strafe;
     existing.axes.ascend = message.input.ascend;
+    existing.axes.mobilePitchAutoCenter = message.input.pitchAutoCenter === true;
     existing.pendingMouseX += message.input.mouseX;
     existing.pendingMouseY += message.input.mouseY;
     existing.hasInput = true;
@@ -268,14 +269,19 @@ export class NetworkManager {
     const now = Date.now();
     if (now - this.lastInputTime < this.tickRate) return;
 
+    const outboundInput: InputUpdateMessage['input'] = {
+      forward: this.pendingLocalInputAxes.forward,
+      strafe: this.pendingLocalInputAxes.strafe,
+      ascend: this.pendingLocalInputAxes.ascend,
+      mouseX: this.pendingLocalMouseX,
+      mouseY: this.pendingLocalMouseY,
+    };
+    if (input.mobilePitchAutoCenter) {
+      outboundInput.pitchAutoCenter = true;
+    }
+
     const message = createMessage<InputUpdateMessage>(MessageType.INPUT_UPDATE, {
-      input: {
-        forward: this.pendingLocalInputAxes.forward,
-        strafe: this.pendingLocalInputAxes.strafe,
-        ascend: this.pendingLocalInputAxes.ascend,
-        mouseX: this.pendingLocalMouseX,
-        mouseY: this.pendingLocalMouseY,
-      },
+      input: outboundInput,
     });
 
     this.peerConnection.send(message);
@@ -352,6 +358,9 @@ export class NetworkManager {
       mouseY: entry.pendingMouseY,
       scrollDelta: 0,
     };
+    if (entry.axes.mobilePitchAutoCenter) {
+      input.mobilePitchAutoCenter = true;
+    }
 
     entry.pendingMouseX = 0;
     entry.pendingMouseY = 0;

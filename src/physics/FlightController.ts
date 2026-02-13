@@ -25,7 +25,13 @@ export class FlightController {
       return;
     }
 
-    const speed = player.getCurrentSpeed();
+    const minY = player.collisionRadii.y;
+    const groundedEpsilon = 0.02;
+    const isGrounded = player.position.y <= minY + groundedEpsilon;
+    const baseSpeed = player.getCurrentSpeed();
+    const movementSpeed = isGrounded
+      ? baseSpeed * GAME_CONFIG.GROUND_SPEED_MULTIPLIER
+      : baseSpeed;
 
     const isPigeon = player.role === PlayerRole.PIGEON;
     const turnCoupling = isPigeon
@@ -92,6 +98,20 @@ export class FlightController {
 
     // === PITCH ===
     player.rotation.x -= input.mouseY * pitchSensitivity;
+    if (
+      input.mobilePitchAutoCenter &&
+      Math.abs(input.mouseY) <= GAME_CONFIG.TOUCH_PITCH_CENTER_INPUT_THRESHOLD
+    ) {
+      player.rotation.x = THREE.MathUtils.damp(
+        player.rotation.x,
+        0,
+        GAME_CONFIG.TOUCH_PITCH_CENTER_RATE,
+        deltaTime
+      );
+      if (Math.abs(player.rotation.x) <= GAME_CONFIG.TOUCH_PITCH_CENTER_SNAP) {
+        player.rotation.x = 0;
+      }
+    }
     player.rotation.x = Math.max(
       -maxPitch,
       Math.min(maxPitch, player.rotation.x)
@@ -109,7 +129,7 @@ export class FlightController {
     // Forward thrust only (W).
     const forwardInput = Math.max(0, input.forward);
     if (forwardInput > 0) {
-      player.velocity.addScaledVector(FlightController._forward, forwardInput * speed * deltaTime * 10);
+      player.velocity.addScaledVector(FlightController._forward, forwardInput * movementSpeed * deltaTime * 10);
     }
 
     // Ascend/descend
@@ -123,7 +143,7 @@ export class FlightController {
     this.wasAscending.set(player, ascendingNow);
 
     if (input.ascend !== 0) {
-      player.velocity.addScaledVector(FlightController._up, input.ascend * speed * deltaTime * 10);
+      player.velocity.addScaledVector(FlightController._up, input.ascend * baseSpeed * deltaTime * 10);
     }
 
     // Air resistance (frame-rate independent)
@@ -131,13 +151,25 @@ export class FlightController {
     player.velocity.multiplyScalar(dragFactor);
 
     // Clamp velocity
-    const maxVelocity = speed * 3;
+    const maxVelocity = baseSpeed * 3;
     if (player.velocity.length() > maxVelocity) {
       player.velocity.normalize().multiplyScalar(maxVelocity);
     }
 
+    // Grounded players can still take off vertically, but stay slow across the ground.
+    if (isGrounded) {
+      const maxGroundPlanarSpeed = movementSpeed * 3;
+      const planarSpeed = Math.sqrt(
+        (player.velocity.x * player.velocity.x) + (player.velocity.z * player.velocity.z)
+      );
+      if (planarSpeed > maxGroundPlanarSpeed && planarSpeed > 0) {
+        const scale = maxGroundPlanarSpeed / planarSpeed;
+        player.velocity.x *= scale;
+        player.velocity.z *= scale;
+      }
+    }
+
     // Keep player above ground (use vertical collision radius so belly touches ground)
-    const minY = player.collisionRadii.y;
     if (player.position.y < minY) {
       player.position.y = minY;
       player.velocity.y = Math.max(0, player.velocity.y);
