@@ -7,10 +7,23 @@ import { CollisionDetector } from '../physics/CollisionDetector';
 import { Player } from '../entities/Player';
 import { Pigeon } from '../entities/Pigeon';
 import { Hawk } from '../entities/Hawk';
-import { GameState } from './GameState';
+import { GameState, PlayerConnectionState } from './GameState';
 import { PeerConnection } from '../network/PeerConnection';
 import { NetworkManager } from '../network/NetworkManager';
-import { FoodCollectedMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
+import {
+  FoodCollectedMessage,
+  FullStatePayload,
+  HostTerminatingMessage,
+  JoinAcceptMessage,
+  JoinDenyMessage,
+  JoinReadyMessage,
+  JoinRequestMessage,
+  NPCKilledMessage,
+  PlayerLeftMessage,
+  RoleAssignmentMessage,
+  RoundEndMessage,
+  RoundStartMessage,
+} from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
 import { RoundEndOptions, ScoreUI } from '../ui/ScoreUI';
 import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
@@ -59,6 +72,7 @@ export class Game {
   // Players
   private localPlayer: Player | null = null;
   private remotePlayers: Map<string, Player> = new Map();
+  private newlyJoinedPlayers: Map<string, number> = new Map(); // peerId -> joinTime
   private localPigeon: Pigeon | null = null;
   private localHawk: Hawk | null = null;
   private remotePigeons: Map<string, Pigeon> = new Map();
@@ -73,12 +87,20 @@ export class Game {
 
   // State
   private isGameStarted: boolean = false;
+  private isStartingGame: boolean = false;
   private lastReconcileTime: number = 0;
+  private localAuthorityDriftMs: number = 0;
   private worldSeed: number = 1;
+  private fixedTimeAccumulator: number = 0; // For fixed timestep on host
   private debugConsoleEl: HTMLElement | null = null;
   private lastDebugRefreshTime: number = 0;
   private debugConsoleVisible: boolean = true;
+  private networkStatsEl: HTMLElement | null = null;
+  private networkStatsVisible: boolean = false;
+  private lastNetworkStatsRefreshTime: number = 0;
   private readonly debugToggleHandler: (event: KeyboardEvent) => void;
+  private readonly networkStatsToggleHandler: (event: KeyboardEvent) => void;
+  private readonly visibilityResumeHandler: () => void;
 
   // Audio
   private ambientLoopId: string | null = null;
@@ -91,6 +113,8 @@ export class Game {
   private countdownActive: boolean = false;
   private readonly roundCountdownSeconds: number = 3;
   private hostRequestToken: number = 0;
+  private controlsEnabled: boolean = false;
+  private pendingConnectedPeers: Set<string> = new Set();
 
   constructor() {
     // Get canvas
@@ -140,7 +164,24 @@ export class Game {
       this.debugConsoleVisible = !this.debugConsoleVisible;
       this.applyDebugConsoleVisibility();
     };
+    this.networkStatsEl = document.getElementById('network-stats');
+    this.networkStatsToggleHandler = (event: KeyboardEvent) => {
+      if (event.code !== 'F4') return;
+      event.preventDefault();
+      this.networkStatsVisible = !this.networkStatsVisible;
+      this.applyNetworkStatsVisibility();
+    };
+    this.visibilityResumeHandler = () => {
+      if (document.visibilityState !== 'visible') return;
+      this.peerConnection?.refreshPresence();
+      if (this.gameState?.isHost && !this.isGameStarted) {
+        this.lobbyUI.showWaiting('Back online. Waiting for players to join...');
+      }
+    };
     window.addEventListener('keydown', this.debugToggleHandler);
+    window.addEventListener('keydown', this.networkStatsToggleHandler);
+    document.addEventListener('visibilitychange', this.visibilityResumeHandler);
+    window.addEventListener('focus', this.visibilityResumeHandler);
 
     // Initialize audio system
     AudioManager.init();
@@ -159,10 +200,10 @@ export class Game {
   }
 
   /**
-   * Generate a short room code (6 chars, no ambiguous characters)
+   * Generate a short numeric room code (6 digits).
    */
   private generateRoomCode(): string {
-    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    const chars = '0123456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars[Math.floor(Math.random() * chars.length)];
@@ -183,11 +224,13 @@ export class Game {
   }
 
   /**
-   * Derive shared world seed from the host peer id so both peers generate
-   * exactly the same map without an extra network message.
+   * Resolve world seed, preferring host-authoritative seed if already known.
    */
   private getWorldSeedFromPeerIds(): number {
     if (!this.gameState) return 1;
+    if (this.gameState.worldSeed > 0) {
+      return this.gameState.worldSeed;
+    }
 
     const hostPeerId = this.gameState.isHost
       ? this.gameState.localPeerId
@@ -228,12 +271,156 @@ export class Game {
       : { local: rightSpawn, remote: leftSpawn };
   }
 
+  private getBuildingClearance(point: THREE.Vector3): number {
+    if (!this.environment || this.environment.buildings.length === 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    let minDistance = Number.POSITIVE_INFINITY;
+    this.environment.buildings.forEach((building) => {
+      const closestX = Math.max(building.min.x, Math.min(point.x, building.max.x));
+      const closestZ = Math.max(building.min.z, Math.min(point.z, building.max.z));
+      const dx = point.x - closestX;
+      const dz = point.z - closestZ;
+      const distance = Math.sqrt((dx * dx) + (dz * dz));
+      if (distance < minDistance) {
+        minDistance = distance;
+      }
+    });
+
+    return minDistance;
+  }
+
+  private distance2D(a: THREE.Vector3, b: THREE.Vector3): number {
+    const dx = a.x - b.x;
+    const dz = a.z - b.z;
+    return Math.sqrt((dx * dx) + (dz * dz));
+  }
+
+  private getStreetSpawnCandidates(): THREE.Vector3[] {
+    if (!this.environment || this.environment.streetCenters.length === 0) {
+      const fallback = this.getSpawnPositions();
+      return [fallback.local.clone(), fallback.remote.clone()];
+    }
+
+    return this.environment.streetCenters
+      .map((point) => new THREE.Vector3(point.x, 5, point.z))
+      .filter((point) => this.getBuildingClearance(point) >= 4);
+  }
+
+  private pickBestSpawnCandidate(
+    candidates: THREE.Vector3[],
+    scoreFn: (point: THREE.Vector3) => number,
+    filterFn: (point: THREE.Vector3) => boolean
+  ): THREE.Vector3 | null {
+    let best: THREE.Vector3 | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    const maxCandidates = Math.min(32, candidates.length);
+    for (let i = 0; i < maxCandidates; i++) {
+      const candidate = candidates[(i * 17) % candidates.length];
+      if (!filterFn(candidate)) continue;
+      const score = scoreFn(candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+
+    return best ? best.clone() : null;
+  }
+
+  private getSafePigeonSpawn(existingHawkPositions: THREE.Vector3[]): THREE.Vector3 {
+    const candidates = this.getStreetSpawnCandidates();
+    const fallback = this.getSpawnPositions().local.clone();
+
+    const strict = this.pickBestSpawnCandidate(
+      candidates,
+      (candidate) => {
+        const hawkDistance = existingHawkPositions.length > 0
+          ? Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)))
+          : 100;
+        const clearance = this.getBuildingClearance(candidate);
+        return (hawkDistance * 2) + clearance;
+      },
+      (candidate) => {
+        if (this.getBuildingClearance(candidate) < 4) return false;
+        if (existingHawkPositions.length === 0) return true;
+        const minHawkDistance = Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)));
+        return minHawkDistance >= 35;
+      }
+    );
+
+    if (strict) return strict;
+
+    const relaxed = this.pickBestSpawnCandidate(
+      candidates,
+      (candidate) => {
+        const hawkDistance = existingHawkPositions.length > 0
+          ? Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)))
+          : 100;
+        return hawkDistance + this.getBuildingClearance(candidate);
+      },
+      () => true
+    );
+
+    return relaxed ?? fallback;
+  }
+
+  private getSafeHawkSpawn(
+    pigeonPosition: THREE.Vector3,
+    existingHawkPositions: THREE.Vector3[]
+  ): THREE.Vector3 {
+    const candidates = this.getStreetSpawnCandidates();
+    const fallback = this.getSpawnPositions().remote.clone();
+
+    const strict = this.pickBestSpawnCandidate(
+      candidates,
+      (candidate) => {
+        const pigeonDistance = this.distance2D(candidate, pigeonPosition);
+        const spacingDistance = existingHawkPositions.length > 0
+          ? Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)))
+          : 30;
+        return pigeonDistance + spacingDistance + this.getBuildingClearance(candidate);
+      },
+      (candidate) => {
+        const pigeonDistance = this.distance2D(candidate, pigeonPosition);
+        if (pigeonDistance < 45 || pigeonDistance > 90) return false;
+        if (this.getBuildingClearance(candidate) < 4) return false;
+        if (existingHawkPositions.length === 0) return true;
+        const minSpacing = Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)));
+        return minSpacing >= 14;
+      }
+    );
+
+    if (strict) return strict;
+
+    const relaxed = this.pickBestSpawnCandidate(
+      candidates,
+      (candidate) => {
+        const pigeonDistance = this.distance2D(candidate, pigeonPosition);
+        const spacingDistance = existingHawkPositions.length > 0
+          ? Math.min(...existingHawkPositions.map((hawkPos) => this.distance2D(candidate, hawkPos)))
+          : 30;
+        return pigeonDistance + spacingDistance;
+      },
+      () => true
+    );
+
+    return relaxed ?? fallback;
+  }
+
   private getRemoteSpawnPosition(index: number, totalRemotes: number): THREE.Vector3 {
-    const base = this.getSpawnPositions().remote.clone();
-    const spacing = 10;
-    const centeredIndex = index - ((Math.max(1, totalRemotes) - 1) / 2);
-    base.z += centeredIndex * spacing;
-    return base;
+    const hawkPositions: THREE.Vector3[] = [];
+    for (let i = 0; i < index; i++) {
+      const existing = this.remotePlayers.get(
+        Array.from(this.remotePlayers.keys())[i] ?? ''
+      );
+      if (existing) hawkPositions.push(existing.position.clone());
+    }
+    const pigeon = this.getCurrentPigeon();
+    const pigeonPosition = pigeon?.player.position ?? this.getSpawnPositions().local;
+    return this.getSafeHawkSpawn(pigeonPosition.clone(), hawkPositions.slice(0, Math.max(0, totalRemotes - 1)));
   }
 
   private getPlayerByPeerId(peerId: string): Player | null {
@@ -266,6 +453,7 @@ export class Game {
     player.rotation.y = yaw;
     player.applyMeshRotation();
     this.remotePlayers.set(peerId, player);
+    this.newlyJoinedPlayers.set(peerId, Date.now()); // Track join time
     this.sceneManager.scene.add(player.mesh);
     return player;
   }
@@ -274,6 +462,7 @@ export class Game {
     const player = this.remotePlayers.get(peerId);
     if (!player) return;
     this.sceneManager.scene.remove(player.mesh);
+    this.newlyJoinedPlayers.delete(peerId); // Clean up tracking
     player.dispose();
     this.remotePlayers.delete(peerId);
     this.remotePigeons.delete(peerId);
@@ -311,7 +500,7 @@ export class Game {
   private getCurrentPigeon(): { peerId: string; player: Player } | null {
     if (!this.gameState) return null;
     const pigeonState = Array.from(this.gameState.players.values())
-      .find((playerState) => playerState.role === PlayerRole.PIGEON);
+      .find((playerState) => playerState.role === PlayerRole.PIGEON && playerState.active);
     if (!pigeonState) return null;
     const player = this.getPlayerByPeerId(pigeonState.peerId);
     if (!player) return null;
@@ -322,13 +511,57 @@ export class Game {
     if (!this.gameState) return [];
     const hawks: Array<{ peerId: string; player: Player }> = [];
     this.gameState.players.forEach((playerState, peerId) => {
-      if (playerState.role !== PlayerRole.HAWK) return;
+      if (playerState.role !== PlayerRole.HAWK || !playerState.active) return;
       const player = this.getPlayerByPeerId(peerId);
       if (player) {
         hawks.push({ peerId, player });
       }
     });
     return hawks;
+  }
+
+  private setControlsEnabled(enabled: boolean): void {
+    this.controlsEnabled = enabled;
+    if (this.gameState && !this.gameState.isHost && this.networkManager) {
+      this.networkManager.setClientInputEnabled(enabled);
+    }
+    if (!enabled) {
+      this.inputManager.resetInputState();
+    }
+  }
+
+  private processPendingConnections(): void {
+    if (!this.gameState || !this.networkManager || !this.gameState.isHost) return;
+
+    const pendingPeers = Array.from(this.pendingConnectedPeers.values());
+    this.pendingConnectedPeers.clear();
+
+    pendingPeers.forEach((peerId) => {
+      if (!this.gameState || !this.networkManager) return;
+      if (this.gameState.players.has(peerId)) return;
+
+      if (this.gameState.players.size >= GAME_CONFIG.MAX_PLAYERS) {
+        this.networkManager.sendJoinDeny(peerId, 'room_full');
+        this.peerConnection?.closePeer(peerId);
+        return;
+      }
+
+      this.networkManager.registerPendingPeer(peerId);
+    });
+  }
+
+  private tryStartRoundIfReady(): void {
+    if (!this.gameState || !this.gameState.isHost || !this.isGameStarted) return;
+
+    if (this.gameState.getActivePlayerCount() < 2) {
+      this.gameState.roundState = RoundState.WAITING_FOR_PLAYERS;
+      this.setControlsEnabled(false);
+      return;
+    }
+
+    if (this.gameState.roundState !== RoundState.PLAYING && !this.countdownActive) {
+      this.startNextRound();
+    }
   }
 
   /**
@@ -360,35 +593,28 @@ export class Game {
 
       // Initialize game state
       this.gameState = new GameState(true, peerId);
+      this.gameState.worldSeed = this.getWorldSeedFromPeerIds();
 
       // Set up connection callbacks
       peerConnection.onConnected((remotePeerId) => {
         console.log('Client connected:', remotePeerId);
         if (!this.gameState) return;
-        const connectedPeers = this.peerConnection?.getRemotePeerIds().length ?? 0;
-        this.lobbyUI.showWaiting(
-          connectedPeers === 1
-            ? '1 friend connected. Launching round...'
-            : `${connectedPeers} friends connected. New joiner ready.`
-        );
         this.gameState.remotePeerId = remotePeerId;
-        if (this.isGameStarted) {
-          if (!this.gameState.players.has(remotePeerId)) {
-            const remoteCount = this.remotePlayers.size + 1;
-            const spawn = this.getRemoteSpawnPosition(this.remotePlayers.size, remoteCount);
-            const remoteState = this.gameState.addPlayer(remotePeerId, PlayerRole.HAWK, spawn);
-            remoteState.rotation.y = Math.PI;
-            this.ensureRemotePlayer(remotePeerId, PlayerRole.HAWK, spawn, Math.PI);
-            this.syncRoleControllers();
-          }
-          return;
+        this.pendingConnectedPeers.add(remotePeerId);
+        if (!this.isGameStarted && !this.isStartingGame) {
+          this.lobbyUI.showWaiting('Player connected. Loading match...');
+          void this.startGame().then(() => {
+            this.processPendingConnections();
+          });
+        } else if (this.networkManager) {
+          this.processPendingConnections();
+        } else {
+          this.lobbyUI.showWaiting('Player connected. Preparing host state...');
         }
-        this.startGame();
       });
 
       this.setupDisconnectHandlers();
-
-      this.lobbyUI.showWaiting('Waiting for player to join...');
+      this.lobbyUI.showWaiting('Waiting for players to join. Share your invite link first.');
     } catch (error) {
       if (requestToken !== this.hostRequestToken) {
         return;
@@ -420,8 +646,9 @@ export class Game {
       this.lobbyUI.showConnecting();
 
       // Normalize accepted inputs:
-      // - "ABC123"
-      // - "birdgame-ABC123" (any case)
+      // - "123456"
+      // - "birdgame-123456" (any case)
+      // Backward-compatible: existing alphanumeric room ids still parse.
       const rawInput = hostPeerId.trim();
       const roomCode = rawInput.replace(/^birdgame-/i, '').toUpperCase();
       const fullPeerId = `birdgame-${roomCode}`;
@@ -437,14 +664,14 @@ export class Game {
       // Set up connection callback
       this.peerConnection.onConnected(() => {
         console.log('Connected to host');
-        this.startGame();
+        void this.startGame();
       });
 
       this.setupDisconnectHandlers();
 
       // Handle connection errors
       setTimeout(() => {
-        if (!this.isGameStarted) {
+        if (!this.gameState || (this.gameState.roundState === RoundState.LOBBY && !this.controlsEnabled)) {
           this.lobbyUI.showError('Failed to connect. Check the room code and try again.');
           this.lobbyUI.show();
         }
@@ -461,8 +688,11 @@ export class Game {
    */
   private async startGame(): Promise<void> {
     if (!this.gameState || !this.peerConnection) return;
+    if (this.isGameStarted || this.isStartingGame) return;
+    this.isStartingGame = true;
 
-    console.log('Starting game...');
+    try {
+      console.log('Starting game...');
 
     // Preload 3D models and sounds in parallel
     const modelTask = preloadModels()
@@ -484,12 +714,21 @@ export class Game {
     this.networkManager.onFoodCollected((message) => this.handleFoodCollected(message));
     this.networkManager.onNPCKilled((message) => this.handleNPCKilled(message));
     this.networkManager.onRoundEnd((message) => this.handleRoundEnd(message));
+    this.networkManager.onJoinRequest((message, peerId) => this.handleJoinRequest(message, peerId));
+    this.networkManager.onJoinReady((message, peerId) => this.handleJoinReady(message, peerId));
+    this.networkManager.onJoinAccept((message) => this.handleJoinAccept(message));
+    this.networkManager.onJoinDeny((message) => this.handleJoinDeny(message));
+    this.networkManager.onFullSnapshotApplied((snapshotId, payload) => this.handleFullSnapshotApplied(snapshotId, payload));
+    this.networkManager.onRoleAssignment((message) => this.handleRoleAssignment(message));
+    this.networkManager.onPlayerLeft((message) => this.handlePlayerLeft(message));
+    this.networkManager.onHostTerminating((message) => this.handleHostTerminating(message));
 
     // Assign roles (host = pigeon, client = hawk for now, will swap later)
     const localRole = this.gameState.isHost ? PlayerRole.PIGEON : PlayerRole.HAWK;
 
     // Build deterministic world from shared seed.
     this.worldSeed = this.getWorldSeedFromPeerIds();
+    this.gameState.worldSeed = this.worldSeed;
     this.environment = new Environment(this.sceneManager.scene, this.worldSeed);
 
     // Set up camera collision with building meshes
@@ -519,23 +758,7 @@ export class Game {
     localPlayerState.rotation.y = this.localPlayer.rotation.y;
     this.sceneManager.scene.add(this.localPlayer.mesh);
 
-    if (this.gameState.isHost) {
-      const remotePeerIds = this.peerConnection.getRemotePeerIds().sort();
-      remotePeerIds.forEach((peerId, index) => {
-        const remoteSpawnPos = this.getRemoteSpawnPosition(index, remotePeerIds.length);
-        const state = this.gameState!.players.get(peerId)
-          ?? this.gameState!.addPlayer(peerId, PlayerRole.HAWK, remoteSpawnPos);
-        state.role = PlayerRole.HAWK;
-        state.position.copy(remoteSpawnPos);
-        state.rotation.set(0, Math.PI, 0);
-        state.velocity.set(0, 0, 0);
-        this.ensureRemotePlayer(peerId, PlayerRole.HAWK, remoteSpawnPos, Math.PI);
-      });
-
-      if (!this.gameState.remotePeerId && remotePeerIds.length > 0) {
-        this.gameState.remotePeerId = remotePeerIds[0];
-      }
-    } else if (this.gameState.remotePeerId) {
+    if (!this.gameState.isHost && this.gameState.remotePeerId) {
       // Client immediately tracks the host as remote; additional clients are
       // created lazily from host state snapshots.
       const hostPeerId = this.gameState.remotePeerId;
@@ -582,6 +805,8 @@ export class Game {
 
     // Initialize role-specific stat controllers
     this.syncRoleControllers();
+    this.setControlsEnabled(false);
+    this.networkManager.setClientInputEnabled(false);
 
     // Set initial camera position
     this.cameraController.setPositionImmediate(this.localPlayer.mesh, this.localPlayer.rotation);
@@ -638,14 +863,26 @@ export class Game {
       this.inputManager.showTouchControls();
     }
 
-    // Start first round immediately for connection reliability.
-    this.gameState.startRound();
     this.isGameStarted = true;
+    this.lastReconcileTime = 0;
+    this.localAuthorityDriftMs = 0;
 
     // Start ambient sounds
     this.ambientLoopId = AudioManager.playLoop(SFX.AMBIENT_CITY, 'ambient', 0.5);
     this.windLoopId = AudioManager.playLoop(SFX.WIND_LOOP, 'ambient', 0.3);
-    AudioManager.play(SFX.ROUND_START, 'sfx');
+
+      if (this.gameState.isHost) {
+        this.processPendingConnections();
+        this.gameState.roundState = RoundState.WAITING_FOR_PLAYERS;
+        this.tryStartRoundIfReady();
+      } else {
+        this.gameState.roundState = RoundState.LOBBY;
+        this.lobbyUI.showWaiting('Joining room...');
+        this.networkManager.sendJoinRequest(this.lobbyUI.getEffectiveUsername());
+      }
+    } finally {
+      this.isStartingGame = false;
+    }
   }
 
   /**
@@ -793,17 +1030,188 @@ export class Game {
 
     // Get input (locked during countdown)
     const rawInput = this.inputManager.getInputState(deltaTime);
-    const input = this.countdownActive
+    const input = (this.countdownActive || !this.controlsEnabled)
       ? { ...rawInput, forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0 }
       : rawInput;
 
-    // Apply flight controls to local player
-    this.flightController.applyInput(this.localPlayer, input, deltaTime);
+    if (this.gameState.isHost) {
+      // HOST: Fixed timestep simulation for deterministic cross-platform sync
+      this.updateHost(deltaTime, input);
+    } else {
+      // CLIENT: Smooth local prediction + interpolated remote players
+      this.updateClient(deltaTime, input);
+    }
 
-    // Update local player
+    this.updateDebugConsole();
+    this.updateNetworkStats();
+  }
+
+  /**
+   * Host update with fixed timestep simulation
+   */
+  private updateHost(deltaTime: number, input: InputState): void {
+    if (!this.gameState || !this.localPlayer) return;
+
+    const FIXED_STEP = 1 / GAME_CONFIG.TICK_RATE; // 0.0333... seconds (30Hz)
+    this.fixedTimeAccumulator += deltaTime;
+
+    // Cap accumulator to prevent spiral of death
+    if (this.fixedTimeAccumulator > 0.25) {
+      this.fixedTimeAccumulator = 0.25;
+    }
+
+    // Run fixed timestep simulation
+    while (this.fixedTimeAccumulator >= FIXED_STEP) {
+      this.simulateStep(FIXED_STEP, input);
+      this.fixedTimeAccumulator -= FIXED_STEP;
+    }
+
+    // Update visuals and network
+    this.updateVisuals();
+    this.updateDiveSounds();
+    if (this.networkManager) {
+      this.networkManager.sendStateSync();
+    }
+  }
+
+  /**
+   * Single fixed timestep simulation (called multiple times per frame on host)
+   */
+  private simulateStep(fixedDelta: number, input: InputState): void {
+    if (!this.gameState || !this.localPlayer) return;
+
+    // Simulate local player
+    this.flightController.applyInput(this.localPlayer, input, fixedDelta);
+    this.localPlayer.update(fixedDelta);
+
+    if (this.environment) {
+      this.environment.checkAndResolveCollisions(
+        this.localPlayer.position,
+        this.localPlayer.radius,
+        this.localPlayer.velocity
+      );
+      if (this.localPlayer.role === PlayerRole.HAWK) {
+        this.environment.applyHawkCanopySlow(
+          this.localPlayer.position,
+          this.localPlayer.radius,
+          this.localPlayer.velocity,
+          fixedDelta
+        );
+      }
+    }
+
+    // Update role stats (hawk energy, etc.)
+    this.updateRoleStats(this.localPlayer, fixedDelta, true);
+
+    // Simulate ALL remote players authoritatively on host
+    if (this.networkManager) {
+      for (const [peerId, remotePlayer] of this.remotePlayers) {
+        const remoteState = this.gameState.players.get(peerId);
+        if (!remoteState?.active) continue;
+
+        const remoteInput = this.networkManager.getRemoteInput(peerId);
+        if (remoteInput && !this.countdownActive) {
+          this.flightController.applyInput(remotePlayer, remoteInput, fixedDelta);
+        }
+        remotePlayer.update(fixedDelta);
+
+        if (this.environment) {
+          this.environment.checkAndResolveCollisions(
+            remotePlayer.position,
+            remotePlayer.radius,
+            remotePlayer.velocity
+          );
+          if (remotePlayer.role === PlayerRole.HAWK) {
+            this.environment.applyHawkCanopySlow(
+              remotePlayer.position,
+              remotePlayer.radius,
+              remotePlayer.velocity,
+              fixedDelta
+            );
+          }
+        }
+
+        this.updateRoleStats(remotePlayer, fixedDelta, true);
+
+        // Sync to game state
+        const remotePlayerState = this.gameState.players.get(peerId);
+        if (remotePlayerState) {
+          remotePlayerState.position.copy(remotePlayer.position);
+          remotePlayerState.rotation.copy(remotePlayer.rotation);
+          remotePlayerState.velocity.copy(remotePlayer.velocity);
+          remotePlayerState.isEating = remotePlayer.isEating;
+          remotePlayerState.weight = this.getPlayerWeight(remotePlayer);
+          remotePlayerState.energy = this.getPlayerEnergy(remotePlayer);
+        }
+      }
+    }
+
+    // Sync local player to game state
+    const localPlayerState = this.gameState.getLocalPlayer();
+    if (localPlayerState) {
+      localPlayerState.position.copy(this.localPlayer.position);
+      localPlayerState.rotation.copy(this.localPlayer.rotation);
+      localPlayerState.velocity.copy(this.localPlayer.velocity);
+      localPlayerState.isEating = this.localPlayer.isEating;
+      localPlayerState.weight = this.getPlayerWeight(this.localPlayer);
+      localPlayerState.energy = this.getPlayerEnergy(this.localPlayer);
+    }
+
+    // Update food spawner
+    if (this.foodSpawner) {
+      this.foodSpawner.update(fixedDelta);
+      this.syncFoodStateToGameState();
+    }
+
+    // Update NPCs
+    if (this.npcSpawner && this.gameState.roundState === RoundState.PLAYING) {
+      const hawkCandidates = this.localPlayer.role === PlayerRole.HAWK
+        ? [this.localPlayer, ...this.getHawkPlayers().map((entry) => entry.player)]
+        : this.getHawkPlayers().map((entry) => entry.player);
+      const hawkPlayer = hawkCandidates.length > 0
+        ? hawkCandidates.reduce((closest, current) => {
+          const closestDistance = this.distance2D(closest.position, this.localPlayer!.position);
+          const currentDistance = this.distance2D(current.position, this.localPlayer!.position);
+          return currentDistance < closestDistance ? current : closest;
+        })
+        : null;
+      const buildingBounds = this.environment
+        ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
+        : [];
+      this.npcSpawner.update(fixedDelta, hawkPlayer?.position ?? null, buildingBounds);
+      this.syncNPCStateToGameState();
+    }
+
+    // Check game events (collisions, round timer)
+    this.checkGameEvents();
+  }
+
+  /**
+   * Update visual representations (called once per render frame on host)
+   */
+  private updateVisuals(): void {
+    if (!this.localPlayer) return;
+
+    // Update mesh positions for all players
+    this.localPlayer.mesh.position.copy(this.localPlayer.position);
+    this.localPlayer.applyMeshRotation();
+
+    for (const [, remotePlayer] of this.remotePlayers) {
+      remotePlayer.mesh.position.copy(remotePlayer.position);
+      remotePlayer.applyMeshRotation();
+    }
+  }
+
+  /**
+   * Client update with smooth prediction and interpolation
+   */
+  private updateClient(deltaTime: number, input: InputState): void {
+    if (!this.gameState || !this.localPlayer || !this.networkManager) return;
+
+    // CLIENT-SIDE PREDICTION: Update local player smoothly for responsiveness
+    this.flightController.applyInput(this.localPlayer, input, deltaTime);
     this.localPlayer.update(deltaTime);
 
-    // Check building collisions for local player
     if (this.environment) {
       this.environment.checkAndResolveCollisions(
         this.localPlayer.position,
@@ -820,139 +1228,114 @@ export class Game {
       }
     }
 
-    // Keep local role behavior responsive on all peers; host remains authoritative.
-    this.updateRoleStats(this.localPlayer, deltaTime, this.gameState.isHost);
+    // Update visuals for feedback (not authoritative)
+    this.updateRoleStats(this.localPlayer, deltaTime, false);
 
-    if (this.foodSpawner) {
-      this.foodSpawner.update(deltaTime);
-    }
-    if (this.npcSpawner) {
-      if (this.gameState.isHost) {
-        if (this.gameState.roundState === RoundState.PLAYING) {
-          const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK
-            ? this.localPlayer
-            : (this.getHawkPlayers()[0]?.player ?? null);
-          const buildingBounds = this.environment
-            ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
-            : [];
-          this.npcSpawner.update(deltaTime, hawkPlayer?.position ?? null, buildingBounds);
-        }
-        this.syncNPCStateToGameState();
-      } else {
-        this.syncNPCStateFromGameState();
-        // Smoothly interpolate NPC visuals between network snapshots
-        this.npcSpawner.updateVisuals(deltaTime);
-      }
-    }
-
-    // Sync local player state to game state
+    // Sync local player to game state (for UI display)
     const localPlayerState = this.gameState.getLocalPlayer();
     if (localPlayerState) {
       localPlayerState.position.copy(this.localPlayer.position);
       localPlayerState.rotation.copy(this.localPlayer.rotation);
       localPlayerState.velocity.copy(this.localPlayer.velocity);
-      if (this.gameState.isHost) {
-        localPlayerState.isEating = this.localPlayer.isEating;
-        localPlayerState.weight = this.getPlayerWeight(this.localPlayer);
-        localPlayerState.energy = this.getPlayerEnergy(this.localPlayer);
-      }
     }
 
-    // Network updates
-    if (this.networkManager) {
-      if (this.gameState.isHost) {
-        // Host: Apply each remote player's input and simulate them authoritatively.
-        for (const [peerId, remotePlayer] of this.remotePlayers) {
-          const remoteInput = this.networkManager.getRemoteInput(peerId);
-          if (remoteInput && !this.countdownActive) {
-            this.flightController.applyInput(remotePlayer, remoteInput, deltaTime);
-          }
-          remotePlayer.update(deltaTime);
+    // Send input to host
+    this.networkManager.sendInputUpdate(input);
 
-          if (this.environment) {
-            this.environment.checkAndResolveCollisions(
-              remotePlayer.position,
-              remotePlayer.radius,
-              remotePlayer.velocity
-            );
-            if (remotePlayer.role === PlayerRole.HAWK) {
-              this.environment.applyHawkCanopySlow(
-                remotePlayer.position,
-                remotePlayer.radius,
-                remotePlayer.velocity,
-                deltaTime
-              );
-            }
-          }
+    // Handle disconnected players
+    this.networkManager.consumeStalePeerRemovals().forEach((peerId) => {
+      this.removeRemotePlayer(peerId);
+    });
 
-          this.updateRoleStats(remotePlayer, deltaTime, true);
+    // SIMPLE INTERPOLATION: Smoothly interpolate remote players from host positions
+    for (const [peerId, remotePlayer] of this.remotePlayers) {
+      const interpolated = this.networkManager.getInterpolatedRemoteState(peerId);
+      if (interpolated) {
+        const distanceError = remotePlayer.position.distanceTo(interpolated.position);
 
-          const remotePlayerState = this.gameState.players.get(peerId);
-          if (remotePlayerState) {
-            remotePlayerState.position.copy(remotePlayer.position);
-            remotePlayerState.rotation.copy(remotePlayer.rotation);
-            remotePlayerState.velocity.copy(remotePlayer.velocity);
-            remotePlayerState.isEating = remotePlayer.isEating;
-            remotePlayerState.weight = this.getPlayerWeight(remotePlayer);
-            remotePlayerState.energy = this.getPlayerEnergy(remotePlayer);
-          }
+        // Hard snap only for very large errors (across map)
+        if (distanceError > 20) {
+          remotePlayer.position.copy(interpolated.position);
+          remotePlayer.rotation.copy(interpolated.rotation);
+          remotePlayer.velocity.copy(interpolated.velocity);
+        } else {
+          // Smooth lerp for normal movement
+          const alpha = Math.min(1, deltaTime / 0.15); // 150ms smooth time
+          remotePlayer.position.lerp(interpolated.position, alpha);
+          remotePlayer.velocity.lerp(interpolated.velocity, alpha);
+          remotePlayer.rotation.x = THREE.MathUtils.lerp(remotePlayer.rotation.x, interpolated.rotation.x, alpha);
+          remotePlayer.rotation.y = this.lerpAngle(remotePlayer.rotation.y, interpolated.rotation.y, alpha);
+          remotePlayer.rotation.z = THREE.MathUtils.lerp(remotePlayer.rotation.z, interpolated.rotation.z, alpha);
         }
-
-        this.syncFoodStateToGameState();
-
-        // Send state sync to all connected clients.
-        this.networkManager.sendStateSync();
-      } else {
-        // Client: Send input to host
-        this.networkManager.sendInputUpdate(input);
-        this.syncRemotePlayersFromGameState();
-
-        // Update all remote players from host-authoritative state.
-        for (const [peerId, remotePlayer] of this.remotePlayers) {
-          const remotePlayerState = this.gameState.players.get(peerId);
-          const interpolated = this.networkManager.getInterpolatedRemoteState(peerId);
-          if (interpolated) {
-            remotePlayer.position.copy(interpolated.position);
-            remotePlayer.rotation.copy(interpolated.rotation);
-            remotePlayer.velocity.copy(interpolated.velocity);
-            remotePlayer.isEating = interpolated.isEating;
-          } else if (remotePlayerState) {
-            remotePlayer.position.copy(remotePlayerState.position);
-            remotePlayer.rotation.copy(remotePlayerState.rotation);
-            remotePlayer.velocity.copy(remotePlayerState.velocity);
-            remotePlayer.isEating = !!remotePlayerState.isEating;
-          } else {
-            continue;
-          }
-
-          remotePlayer.mesh.position.copy(remotePlayer.position);
-          remotePlayer.applyMeshRotation();
-        }
-
-        this.syncVisualStatsFromGameState();
-        this.syncFoodStateFromGameState();
-        this.reconcileLocalPlayerWithAuthority(deltaTime);
+        remotePlayer.isEating = interpolated.isEating;
       }
+
+      remotePlayer.mesh.position.copy(remotePlayer.position);
+      remotePlayer.applyMeshRotation();
     }
 
-    // Collision detection and timer check (host only)
-    if (this.gameState.isHost && this.gameState.roundState === RoundState.PLAYING) {
-      this.checkCollisions();
+    this.syncVisualStatsFromGameState();
+    this.syncFoodStateFromGameState();
 
-      // Check if round timer expired (pigeon survives)
-      if (this.gameState.isRoundTimeUp()) {
-        this.endRoundPigeonSurvived();
-      }
+    // Update NPCs visually (host sends authoritative state)
+    if (this.npcSpawner) {
+      this.syncNPCStateFromGameState();
+      this.npcSpawner.updateVisuals(deltaTime);
     }
 
-    // Update dive sound triggers
+    // Update food spawner
+    if (this.foodSpawner) {
+      this.foodSpawner.update(deltaTime);
+    }
+
+    // GENTLE LOCAL CORRECTIONS: Only correct big errors from host authority
+    this.gentleLocalPlayerCorrection(deltaTime);
+
+    // Update sounds, camera, and HUD
     this.updateDiveSounds();
-
-    // Update camera to follow local player
     this.cameraController.update(this.localPlayer.mesh, this.localPlayer.rotation, input.scrollDelta);
-
-    // Update HUD
     this.updateHUD();
+  }
+
+  /**
+   * Gentle local player correction from host authority (clients only)
+   */
+  private gentleLocalPlayerCorrection(deltaTime: number): void {
+    if (!this.gameState || !this.localPlayer || !this.networkManager) return;
+
+    const authoritative = this.networkManager.getLocalAuthoritativeState();
+    if (!authoritative) return;
+
+    const error = this.localPlayer.position.distanceTo(authoritative.position);
+
+    // Only correct if error is significant (>3 units)
+    if (error > 3) {
+      // Gentle correction over time
+      const correctionAlpha = Math.min(1, deltaTime / 0.5); // 500ms correction time
+      this.localPlayer.position.lerp(authoritative.position, correctionAlpha);
+      this.localPlayer.velocity.lerp(authoritative.velocity, correctionAlpha);
+
+      // Hard snap if really far off (cross-platform desync)
+      if (error > 20) {
+        this.localPlayer.position.copy(authoritative.position);
+        this.localPlayer.rotation.copy(authoritative.rotation);
+        this.localPlayer.velocity.copy(authoritative.velocity);
+      }
+    }
+  }
+
+  /**
+   * Check collisions and handle game events (host only, called from simulateStep)
+   */
+  private checkGameEvents(): void {
+    if (!this.gameState || this.gameState.roundState !== RoundState.PLAYING) return;
+
+    this.checkCollisions();
+
+    // Check if round timer expired (pigeon survives)
+    if (this.gameState.isRoundTimeUp()) {
+      this.endRoundPigeonSurvived();
+    }
   }
 
   /**
@@ -1055,6 +1438,7 @@ export class Game {
     }
 
     this.updateDebugConsole();
+    this.updateNetworkStats();
   }
 
   private updateDebugConsole(): void {
@@ -1133,6 +1517,39 @@ export class Game {
     this.debugConsoleEl.style.display = this.isGameStarted && this.debugConsoleVisible ? 'block' : 'none';
   }
 
+  private applyNetworkStatsVisibility(): void {
+    if (!this.networkStatsEl) return;
+    this.networkStatsEl.style.display = this.isGameStarted && this.networkStatsVisible ? 'block' : 'none';
+  }
+
+  private updateNetworkStats(): void {
+    if (!this.networkStatsEl || !this.networkManager) return;
+    if (!this.gameState || this.gameState.isHost) {
+      // Network stats only relevant for clients
+      return;
+    }
+
+    const now = performance.now();
+    if (now - this.lastNetworkStatsRefreshTime < 200) return; // Update 5 times per second
+    this.lastNetworkStatsRefreshTime = now;
+
+    // Get network stats from NetworkManager
+    const stats = this.networkManager.getNetworkStats();
+
+    // Update UI elements
+    const bufferEl = document.getElementById('stat-buffer');
+    const rttEl = document.getElementById('stat-rtt');
+    const jitterEl = document.getElementById('stat-jitter');
+    const playersEl = document.getElementById('stat-players');
+    const snapshotsEl = document.getElementById('stat-snapshots');
+
+    if (bufferEl) bufferEl.textContent = `${Math.round(stats.bufferMs)}ms`;
+    if (rttEl) rttEl.textContent = `${Math.round(stats.rttMs)}ms`;
+    if (jitterEl) jitterEl.textContent = `${Math.round(stats.jitterMs)}ms`;
+    if (playersEl) playersEl.textContent = `${this.remotePlayers.size}`;
+    if (snapshotsEl) snapshotsEl.textContent = `${stats.snapshotCount}`;
+  }
+
   private formatVec3(value: THREE.Vector3): string {
     return `${value.x.toFixed(1)},${value.y.toFixed(1)},${value.z.toFixed(1)}`;
   }
@@ -1144,8 +1561,14 @@ export class Game {
     if (!this.localPlayer || !this.gameState) return;
 
     const pigeon = this.getCurrentPigeon();
-    if (pigeon) {
+    const currentTick = this.networkManager?.getCurrentServerTick() ?? 0;
+    const pigeonState = pigeon ? this.gameState.players.get(pigeon.peerId) : null;
+    const pigeonProtected = pigeonState ? currentTick < pigeonState.spawnProtectionUntilTick : false;
+
+    if (pigeon && !pigeonProtected) {
       for (const hawk of this.getHawkPlayers()) {
+        const hawkState = this.gameState.players.get(hawk.peerId);
+        if (!hawkState?.active) continue;
         const collision = this.collisionDetector.checkPlayerCollision(
           pigeon.player,
           hawk.player
@@ -1198,6 +1621,7 @@ export class Game {
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
+    this.setControlsEnabled(false);
 
     // Send death event to clients (host only)
     if (this.gameState.isHost && this.networkManager) {
@@ -1232,7 +1656,12 @@ export class Game {
     if (!this.gameState) return;
 
     const pigeon = this.getCurrentPigeon();
-    if (!pigeon) return;
+    if (!pigeon) {
+      if (this.gameState.isHost) {
+        this.handleInsufficientPlayers('missing pigeon');
+      }
+      return;
+    }
 
     const pigeonWeight = this.getPlayerWeight(pigeon.player);
     const survivalTime = this.gameState.roundDuration;
@@ -1246,6 +1675,7 @@ export class Game {
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
+    this.setControlsEnabled(false);
 
     // Send round end event to client
     if (this.networkManager) {
@@ -1281,10 +1711,12 @@ export class Game {
     const { winner, pigeonWeight, survivalTime } = message;
 
     // Update scores on client
-    this.gameState.scores.pigeon.totalWeight += pigeonWeight;
+    if (winner === 'pigeon' || winner === 'hawk') {
+      this.gameState.scores.pigeon.totalWeight += pigeonWeight;
+    }
     if (winner === 'pigeon') {
       this.gameState.scores.pigeon.roundsWon += 1;
-    } else {
+    } else if (winner === 'hawk') {
       this.gameState.scores.hawk.roundsWon += 1;
       this.gameState.scores.hawk.killTimes.push(survivalTime);
     }
@@ -1292,13 +1724,20 @@ export class Game {
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
+    this.setControlsEnabled(false);
 
     // Play round-end sounds on client
     if (winner === 'hawk') {
       AudioManager.play(SFX.HAWK_SCREECH, 'sfx');
       AudioManager.play(SFX.HAWK_WINS, 'sfx');
-    } else {
+    } else if (winner === 'pigeon') {
       AudioManager.play(SFX.PIGEON_WINS, 'sfx');
+    }
+
+    if (winner === 'insufficient_players') {
+      this.gameState.roundState = RoundState.WAITING_FOR_PLAYERS;
+      this.showEventPopup('Round paused: not enough players', 'warn');
+      return;
     }
 
     this.inputManager.hideTouchControls();
@@ -1316,6 +1755,256 @@ export class Game {
     this.inputManager.releasePointerLock();
   }
 
+  private handleJoinRequest(_message: JoinRequestMessage, peerId: string): void {
+    if (!this.gameState || !this.networkManager || !this.gameState.isHost) return;
+
+    if (this.gameState.players.size >= GAME_CONFIG.MAX_PLAYERS) {
+      this.networkManager.sendJoinDeny(peerId, 'room_full');
+      this.peerConnection?.closePeer(peerId);
+      return;
+    }
+
+    const spawn = this.getRemoteSpawnPosition(this.remotePlayers.size, this.remotePlayers.size + 1);
+    const playerState = this.gameState.players.get(peerId)
+      ?? this.gameState.addPlayer(peerId, PlayerRole.HAWK, spawn);
+    playerState.role = PlayerRole.HAWK;
+    playerState.position.copy(spawn);
+    playerState.rotation.set(0, Math.PI, 0);
+    playerState.velocity.set(0, 0, 0);
+    playerState.active = false;
+
+    this.ensureRemotePlayer(peerId, PlayerRole.HAWK, spawn, Math.PI);
+    this.gameState.setPlayerConnectionState(peerId, PlayerConnectionState.SYNCING, false);
+
+    this.networkManager.sendJoinAccept(
+      peerId,
+      PlayerRole.HAWK,
+      this.gameState.worldSeed,
+      this.gameState.roundState,
+      this.gameState.roundNumber
+    );
+    this.networkManager.sendFullStateSnapshot(peerId, this.networkManager.buildFullStateSnapshotPayload());
+    this.showEventPopup('Player syncing into match...', 'warn');
+  }
+
+  private handleJoinReady(_message: JoinReadyMessage, peerId: string): void {
+    if (!this.gameState || !this.networkManager || !this.gameState.isHost) return;
+
+    const playerState = this.gameState.players.get(peerId);
+    if (!playerState) return;
+
+    this.networkManager.activatePeer(peerId);
+    playerState.active = true;
+
+    // Lock newly joined hawk input briefly to avoid instant collision artifacts.
+    const currentTick = this.networkManager.getCurrentServerTick();
+    const lockUntilTick = currentTick + Math.ceil(GAME_CONFIG.HAWK_INPUT_LOCK_SECONDS * GAME_CONFIG.TICK_RATE);
+    this.gameState.setInputLock(peerId, lockUntilTick);
+
+    if (this.gameState.roundState === RoundState.PLAYING) {
+      const pigeon = this.getCurrentPigeon();
+      const existingHawks = this.getHawkPlayers()
+        .filter((entry) => entry.peerId !== peerId)
+        .map((entry) => entry.player.position.clone());
+      const spawn = this.getSafeHawkSpawn(
+        pigeon?.player.position.clone() ?? this.getSpawnPositions().local,
+        existingHawks
+      );
+      const remotePlayer = this.getPlayerByPeerId(peerId);
+      if (remotePlayer) {
+        remotePlayer.position.copy(spawn);
+        remotePlayer.rotation.set(0, Math.PI, 0);
+        remotePlayer.velocity.set(0, 0, 0);
+        remotePlayer.mesh.position.copy(remotePlayer.position);
+        remotePlayer.applyMeshRotation();
+      }
+      playerState.position.copy(spawn);
+      playerState.rotation.set(0, Math.PI, 0);
+      playerState.velocity.set(0, 0, 0);
+    }
+
+    const roles: { [peerId: string]: PlayerRole } = {};
+    const spawnStates: RoleAssignmentMessage['spawnStates'] = {};
+    const activePeers: string[] = [];
+    const inputLockedUntilTick: { [peerId: string]: number } = {};
+    this.gameState.players.forEach((state, id) => {
+      roles[id] = state.role;
+      if (state.active) activePeers.push(id);
+      inputLockedUntilTick[id] = state.inputLockedUntilTick;
+      spawnStates[id] = {
+        position: { x: state.position.x, y: state.position.y, z: state.position.z },
+        rotation: { x: state.rotation.x, y: state.rotation.y, z: state.rotation.z },
+        velocity: { x: state.velocity.x, y: state.velocity.y, z: state.velocity.z },
+      };
+    });
+
+    this.networkManager.sendRoleAssignment(roles, {
+      activePeers,
+      spawnStates,
+      reason: 'join_activated',
+      inputLockedUntilTick,
+    });
+
+    this.syncRoleControllers();
+    this.tryStartRoundIfReady();
+    this.showEventPopup('Player joined match', 'good');
+  }
+
+  private handleJoinAccept(message: JoinAcceptMessage): void {
+    if (!this.gameState || this.gameState.isHost) return;
+
+    this.gameState.worldSeed = message.worldSeed;
+    this.gameState.roundState = message.roundState;
+    this.gameState.roundNumber = message.roundNumber;
+    this.lobbyUI.showWaiting('Syncing full match state...');
+  }
+
+  private handleJoinDeny(message: JoinDenyMessage): void {
+    if (!this.gameState || this.gameState.isHost) return;
+
+    this.setControlsEnabled(false);
+    const reason = message.reason === 'room_full'
+      ? 'Room is full'
+      : message.reason === 'version_mismatch'
+        ? 'Version mismatch'
+        : message.reason === 'match_locked'
+          ? 'Match is locked'
+          : 'Join timed out';
+    this.lobbyUI.showError(`${reason}. Try another invite.`);
+    this.lobbyUI.show();
+    this.peerConnection?.disconnect();
+  }
+
+  private handleFullSnapshotApplied(snapshotId: string, payload: FullStatePayload): void {
+    if (!this.gameState || !this.networkManager || this.gameState.isHost) return;
+    if (!this.localPlayer) return;
+
+    const localState = payload.players[this.gameState.localPeerId];
+    if (localState) {
+      this.localPlayer.role = localState.role;
+      this.localPlayer.position.set(localState.position.x, localState.position.y, localState.position.z);
+      this.localPlayer.rotation.set(localState.rotation.x, localState.rotation.y, localState.rotation.z);
+      this.localPlayer.velocity.set(localState.velocity.x, localState.velocity.y, localState.velocity.z);
+      this.localPlayer.mesh.position.copy(this.localPlayer.position);
+      this.localPlayer.applyMeshRotation();
+      this.swapPlayerModel(this.localPlayer);
+
+      const gameStateLocal = this.gameState.players.get(this.gameState.localPeerId);
+      if (gameStateLocal) {
+        gameStateLocal.role = localState.role;
+        gameStateLocal.position.copy(this.localPlayer.position);
+        gameStateLocal.rotation.copy(this.localPlayer.rotation);
+        gameStateLocal.velocity.copy(this.localPlayer.velocity);
+      }
+    }
+
+    this.syncRemotePlayersFromGameState();
+    this.syncRoleControllers();
+    this.syncFoodStateFromGameState();
+    this.syncNPCStateFromGameState();
+    this.networkManager.resetRemoteInput();
+    this.setControlsEnabled(false);
+    this.networkManager.sendJoinReady(snapshotId);
+    this.lobbyUI.showWaiting('Waiting for host activation...');
+  }
+
+  private handleRoleAssignment(message: RoleAssignmentMessage): void {
+    if (!this.gameState || !this.localPlayer) return;
+
+    for (const peerId of Array.from(this.gameState.players.keys())) {
+      if (!(peerId in message.roles)) {
+        this.gameState.players.delete(peerId);
+      }
+    }
+
+    Object.entries(message.roles).forEach(([peerId, role]) => {
+      const state = this.gameState!.players.get(peerId)
+        ?? this.gameState!.addPlayer(peerId, role, this.getSpawnPositions().remote.clone());
+      state.role = role;
+    });
+
+    if (message.spawnStates) {
+      Object.entries(message.spawnStates).forEach(([peerId, spawn]) => {
+        const state = this.gameState!.players.get(peerId);
+        if (!state) return;
+        state.position.set(spawn.position.x, spawn.position.y, spawn.position.z);
+        state.rotation.set(spawn.rotation.x, spawn.rotation.y, spawn.rotation.z);
+        state.velocity.set(spawn.velocity.x, spawn.velocity.y, spawn.velocity.z);
+      });
+    }
+
+    if (message.spawnProtectionUntilTick) {
+      Object.entries(message.spawnProtectionUntilTick).forEach(([peerId, tick]) => {
+        this.gameState!.setSpawnProtection(peerId, tick);
+      });
+    }
+
+    if (message.inputLockedUntilTick) {
+      Object.entries(message.inputLockedUntilTick).forEach(([peerId, tick]) => {
+        this.gameState!.setInputLock(peerId, tick);
+      });
+    }
+
+    const localRole = message.roles[this.gameState.localPeerId];
+    if (localRole && this.localPlayer.role !== localRole) {
+      this.localPlayer.role = localRole;
+      this.swapPlayerModel(this.localPlayer);
+    }
+
+    this.syncRemotePlayersFromGameState();
+    this.gameState.players.forEach((state, peerId) => {
+      const player = this.getPlayerByPeerId(peerId);
+      if (!player) return;
+      player.role = state.role;
+      if (message.spawnStates && message.spawnStates[peerId]) {
+        const spawn = message.spawnStates[peerId];
+        player.position.set(spawn.position.x, spawn.position.y, spawn.position.z);
+        player.rotation.set(spawn.rotation.x, spawn.rotation.y, spawn.rotation.z);
+        player.velocity.set(spawn.velocity.x, spawn.velocity.y, spawn.velocity.z);
+        player.mesh.position.copy(player.position);
+        player.applyMeshRotation();
+      }
+      this.swapPlayerModel(player);
+    });
+    this.syncRoleControllers();
+
+    if (!this.gameState.isHost) {
+      const localIsActive = message.activePeers
+        ? message.activePeers.includes(this.gameState.localPeerId)
+        : true;
+      if (localIsActive && !this.countdownActive && this.gameState.roundState === RoundState.PLAYING) {
+        this.setControlsEnabled(true);
+        this.lobbyUI.hide();
+      }
+    }
+  }
+
+  private handlePlayerLeft(message: PlayerLeftMessage): void {
+    if (!this.gameState) return;
+
+    this.removeRemotePlayer(message.peerId);
+    if (this.gameState.remotePeerId === message.peerId) {
+      const fallback = Array.from(this.remotePlayers.keys())[0] ?? null;
+      this.gameState.remotePeerId = fallback;
+    }
+
+    if (!this.gameState.isHost) {
+      this.showEventPopup('A player left the match', 'warn');
+    }
+    this.tryStartRoundIfReady();
+  }
+
+  private handleHostTerminating(message: HostTerminatingMessage): void {
+    if (this.gameState?.isHost) return;
+    this.setControlsEnabled(false);
+    this.inputManager.hideTouchControls();
+
+    const overlay = document.getElementById('disconnect-overlay');
+    if (overlay) overlay.style.display = 'block';
+    const status = document.getElementById('disconnect-status');
+    if (status) status.textContent = `Host ended match: ${message.reason}`;
+  }
+
   /**
    * Start next round flow (host only).
    */
@@ -1329,11 +2018,22 @@ export class Game {
       return;
     }
 
+    if (this.gameState.getActivePlayerCount() < 2) {
+      this.gameState.roundState = RoundState.WAITING_FOR_PLAYERS;
+      this.setControlsEnabled(false);
+      this.showEventPopup('Waiting for at least 2 active players...', 'warn');
+      return;
+    }
+
     // Choose next pigeon: killing hawk becomes pigeon, otherwise keep prior pigeon.
     let nextPigeonPeerId = this.nextPigeonPeerId;
-    if (!nextPigeonPeerId) {
-      const currentPigeon = Array.from(this.gameState.players.values()).find((p) => p.role === PlayerRole.PIGEON);
-      nextPigeonPeerId = currentPigeon?.peerId ?? this.gameState.localPeerId;
+    const activePeerIds = Array.from(this.gameState.players.values())
+      .filter((player) => player.active)
+      .map((player) => player.peerId);
+    if (!nextPigeonPeerId || !activePeerIds.includes(nextPigeonPeerId)) {
+      const currentPigeon = Array.from(this.gameState.players.values())
+        .find((p) => p.role === PlayerRole.PIGEON && p.active);
+      nextPigeonPeerId = currentPigeon?.peerId ?? this.gameState.getLowestJoinOrderActiveHawk() ?? this.gameState.localPeerId;
     }
     this.gameState.assignRolesForNextRound(nextPigeonPeerId);
     this.nextPigeonPeerId = null;
@@ -1370,9 +2070,14 @@ export class Game {
     const nextRoundNumber = this.gameState.roundNumber + 1;
     const roundStartAt = Date.now() + (this.roundCountdownSeconds * 1000);
     const roles: { [peerId: string]: PlayerRole } = {};
+    const spawnProtectionUntilTick: { [peerId: string]: number } = {};
+    const inputLockedUntilTick: { [peerId: string]: number } = {};
 
     this.gameState.players.forEach((playerState, peerId) => {
+      if (!playerState.active) return;
       roles[peerId] = playerState.role;
+      spawnProtectionUntilTick[peerId] = playerState.spawnProtectionUntilTick;
+      inputLockedUntilTick[peerId] = playerState.inputLockedUntilTick;
     });
 
     if (this.networkManager) {
@@ -1381,7 +2086,9 @@ export class Game {
         roundStartAt,
         this.roundCountdownSeconds,
         roles,
-        spawnStates
+        spawnStates,
+        spawnProtectionUntilTick,
+        inputLockedUntilTick
       );
     }
 
@@ -1392,6 +2099,7 @@ export class Game {
     this.clearRoundCountdownState();
     this.lobbyUI.showPersonalBestBadge(false);
     this.countdownActive = true;
+    this.setControlsEnabled(false);
     this.inputManager.resetInputState();
     this.inputManager.showTouchControls();
     this.networkManager?.resetRemoteInput();
@@ -1436,6 +2144,7 @@ export class Game {
     this.gameState.roundNumber = Math.max(0, roundNumber - 1);
     this.gameState.startRound();
     this.countdownActive = false;
+    this.setControlsEnabled(true);
     AudioManager.play(SFX.ROUND_START, 'sfx');
 
     this.countdownHideTimeoutId = window.setTimeout(() => {
@@ -1499,8 +2208,9 @@ export class Game {
     const hawk = peerId === this.gameState.localPeerId
       ? this.localHawk
       : (this.remoteHawks.get(peerId) ?? null);
-    if (hawk) {
-      hawk.update(deltaTime, authoritative);
+    // Only update hawk energy when authoritative to prevent desync
+    if (hawk && authoritative) {
+      hawk.update(deltaTime, true);
     }
   }
 
@@ -1686,7 +2396,7 @@ export class Game {
         rotation: snapshot.rotation,
         state: snapshot.state,
         exists: snapshot.exists,
-        respawnTimer: 0,
+        respawnTimer: snapshot.respawnTimer ?? 0,
       }))
     );
   }
@@ -1705,6 +2415,7 @@ export class Game {
         rotation: npc.rotation,
         state: npc.state,
         exists: npc.exists,
+        respawnTimer: npc.respawnTimer ?? 0,
       }))
     );
   }
@@ -1783,23 +2494,47 @@ export class Game {
       };
     } = {};
 
-    const pigeonPeerId = Array.from(this.gameState.players.values())
-      .find((playerState) => playerState.role === PlayerRole.PIGEON)?.peerId
-      ?? this.gameState.localPeerId;
-    const hawkIds = Array.from(this.gameState.players.keys())
+    const activePlayers = Array.from(this.gameState.players.entries())
+      .filter(([, playerState]) => playerState.active);
+    if (activePlayers.length === 0) {
+      return spawnStates;
+    }
+
+    let pigeonPeerId = activePlayers.find(([, playerState]) => playerState.role === PlayerRole.PIGEON)?.[0]
+      ?? activePlayers[0][0];
+    if (!this.gameState.players.has(pigeonPeerId)) {
+      pigeonPeerId = this.gameState.localPeerId;
+    }
+
+    const hawkIds = activePlayers
+      .map(([peerId]) => peerId)
       .filter((peerId) => peerId !== pigeonPeerId)
-      .sort();
+      .sort((a, b) => {
+        const aState = this.gameState!.players.get(a);
+        const bState = this.gameState!.players.get(b);
+        return (aState?.joinOrder ?? 0) - (bState?.joinOrder ?? 0);
+      });
 
-    const pigeonSpawn = this.getSpawnPositions().local.clone();
+    const existingHawkPositions = hawkIds
+      .map((peerId) => this.getPlayerByPeerId(peerId)?.position.clone())
+      .filter((pos): pos is THREE.Vector3 => !!pos);
+    const pigeonSpawn = this.getSafePigeonSpawn(existingHawkPositions);
 
-    this.gameState.players.forEach((playerState, peerId) => {
-      const player = this.getPlayerByPeerId(peerId);
-      if (!player) return;
-
+    const assignedHawkSpawns: THREE.Vector3[] = [];
+    activePlayers.forEach(([peerId, playerState]) => {
       const isPigeon = peerId === pigeonPeerId;
       const spawnPos = isPigeon
         ? pigeonSpawn
-        : this.getRemoteSpawnPosition(Math.max(0, hawkIds.indexOf(peerId)), Math.max(1, hawkIds.length));
+        : this.getSafeHawkSpawn(pigeonSpawn, assignedHawkSpawns);
+      if (!isPigeon) {
+        assignedHawkSpawns.push(spawnPos.clone());
+      }
+
+      let player = this.getPlayerByPeerId(peerId);
+      if (!player && peerId !== this.gameState!.localPeerId) {
+        player = this.ensureRemotePlayer(peerId, playerState.role, spawnPos, playerState.role === PlayerRole.PIGEON ? 0 : Math.PI);
+      }
+      if (!player) return;
 
       player.position.copy(spawnPos);
       player.rotation.set(0, isPigeon ? 0 : Math.PI, 0);
@@ -1843,29 +2578,55 @@ export class Game {
     if (!this.gameState || this.gameState.isHost || !this.localPlayer || !this.networkManager) return;
 
     const now = performance.now();
-    if (now - this.lastReconcileTime < 33) return; // ~30Hz correction
+    const elapsedSinceLast = this.lastReconcileTime > 0 ? now - this.lastReconcileTime : (deltaTime * 1000);
+    if (elapsedSinceLast < 33) return; // ~30Hz correction keeps authority alignment tighter
 
     const authoritative = this.networkManager.getLocalAuthoritativeState();
     if (!authoritative) return;
 
-    // Ignore stale snapshots.
-    if (Date.now() - authoritative.timestamp > 300) return;
+    const latestServerTick = this.networkManager.getEstimatedServerTick();
+    const tickAge = latestServerTick - authoritative.serverTick;
+    if (tickAge > GAME_CONFIG.RECONCILE_MAX_TICK_AGE) return;
 
-    const hardSnapDistance = 5.0;
-    const softStartDistance = 0.4;
+    const hardSnapDistance = GAME_CONFIG.RECONCILE_HARD_DISTANCE;
+    const softStartDistance = GAME_CONFIG.RECONCILE_SOFT_DISTANCE;
     const error = this.localPlayer.position.distanceTo(authoritative.position);
+    const yawDelta = Math.atan2(
+      Math.sin(authoritative.rotation.y - this.localPlayer.rotation.y),
+      Math.cos(authoritative.rotation.y - this.localPlayer.rotation.y)
+    );
+    const yawDeltaDeg = Math.abs(THREE.MathUtils.radToDeg(yawDelta));
+    const hardSnapRotation = yawDeltaDeg > GAME_CONFIG.RECONCILE_HARD_ANGLE_DEG;
+    const significantError = error > GAME_CONFIG.RECONCILE_SOFT_DISTANCE || yawDeltaDeg > 18;
 
-    if (error > hardSnapDistance) {
+    if (significantError) {
+      this.localAuthorityDriftMs += elapsedSinceLast;
+    } else {
+      this.localAuthorityDriftMs = Math.max(0, this.localAuthorityDriftMs - (elapsedSinceLast * 1.5));
+    }
+
+    const persistentDrift = this.localAuthorityDriftMs >= 300;
+    const persistentDriftDistance = Math.max(
+      GAME_CONFIG.RECONCILE_SOFT_DISTANCE * 2.5,
+      GAME_CONFIG.RECONCILE_HARD_DISTANCE * 0.5,
+    );
+
+    if (error > hardSnapDistance || hardSnapRotation || (persistentDrift && error > persistentDriftDistance)) {
       this.localPlayer.position.copy(authoritative.position);
       this.localPlayer.velocity.copy(authoritative.velocity);
       this.localPlayer.rotation.copy(authoritative.rotation);
+      this.localAuthorityDriftMs = 0;
     } else if (error > softStartDistance) {
-      const alpha = Math.min(0.22, deltaTime * 10);
+      const errorRatio = Math.min(1, error / Math.max(0.001, hardSnapDistance));
+      const alpha = Math.min(0.24, Math.max(0.1, (deltaTime * 7) + (errorRatio * 0.08)));
       this.localPlayer.position.lerp(authoritative.position, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
       this.localPlayer.rotation.x = THREE.MathUtils.lerp(this.localPlayer.rotation.x, authoritative.rotation.x, alpha);
       this.localPlayer.rotation.y = this.lerpAngle(this.localPlayer.rotation.y, authoritative.rotation.y, alpha);
       this.localPlayer.rotation.z = THREE.MathUtils.lerp(this.localPlayer.rotation.z, authoritative.rotation.z, alpha);
+    } else if (yawDeltaDeg > 10) {
+      const yawAlpha = Math.min(0.2, deltaTime * 8);
+      this.localPlayer.rotation.y = this.lerpAngle(this.localPlayer.rotation.y, authoritative.rotation.y, yawAlpha);
     }
 
     this.localPlayer.mesh.position.copy(this.localPlayer.position);
@@ -2012,6 +2773,13 @@ export class Game {
       const state = this.gameState!.players.get(peerId)
         ?? this.gameState!.addPlayer(peerId, role as PlayerRole, spawnPos);
       state.role = role as PlayerRole;
+      state.active = true;
+      if (message.spawnProtectionUntilTick && message.spawnProtectionUntilTick[peerId] !== undefined) {
+        state.spawnProtectionUntilTick = message.spawnProtectionUntilTick[peerId];
+      }
+      if (message.inputLockedUntilTick && message.inputLockedUntilTick[peerId] !== undefined) {
+        state.inputLockedUntilTick = message.inputLockedUntilTick[peerId];
+      }
     });
 
     this.syncRemotePlayersFromGameState();
@@ -2070,20 +2838,122 @@ export class Game {
   /**
    * Set up disconnect/reconnect handlers on peer connection
    */
+  private handleInsufficientPlayers(reason: string): void {
+    if (!this.gameState || !this.networkManager || !this.gameState.isHost) return;
+
+    if (this.gameState.roundState === RoundState.PLAYING) {
+      this.networkManager.sendRoundEnd('insufficient_players', 0, this.gameState.getRoundTime());
+    }
+    this.gameState.endRound();
+    this.gameState.roundState = RoundState.WAITING_FOR_PLAYERS;
+    this.networkManager.resetRemoteInput();
+    this.setControlsEnabled(false);
+    this.clearRoundCountdownState();
+    this.showEventPopup(`Round paused: ${reason}`, 'warn');
+  }
+
+  private handleHostSideDisconnect(peerId: string): void {
+    if (!this.gameState || !this.gameState.isHost) return;
+
+    const removedState = this.gameState.removePlayer(peerId);
+    this.networkManager?.unregisterPeer(peerId);
+    this.networkManager?.sendPlayerLeft(peerId, 'disconnect');
+    this.removeRemotePlayer(peerId);
+
+    if (this.gameState.remotePeerId === peerId) {
+      const remainingPeerIds = this.peerConnection?.getRemotePeerIds() ?? [];
+      this.gameState.remotePeerId = remainingPeerIds.length > 0 ? remainingPeerIds[0] : null;
+    }
+
+    if (!removedState) {
+      return;
+    }
+
+    if (this.gameState.roundState === RoundState.PLAYING && removedState.role === PlayerRole.PIGEON) {
+      const nextPigeonPeerId = this.gameState.getLowestJoinOrderActiveHawk();
+      if (!nextPigeonPeerId) {
+        this.handleInsufficientPlayers('pigeon disconnected');
+        return;
+      }
+
+      this.gameState.assignRolesForNextRound(nextPigeonPeerId);
+      const promotedState = this.gameState.players.get(nextPigeonPeerId);
+      const promotedPlayer = this.getPlayerByPeerId(nextPigeonPeerId);
+      if (promotedState && promotedPlayer) {
+        const hawkPositions = this.getHawkPlayers()
+          .filter((entry) => entry.peerId !== nextPigeonPeerId)
+          .map((entry) => entry.player.position.clone());
+        const safeSpawn = this.getSafePigeonSpawn(hawkPositions);
+
+        promotedPlayer.role = PlayerRole.PIGEON;
+        this.swapPlayerModel(promotedPlayer);
+        promotedPlayer.position.copy(safeSpawn);
+        promotedPlayer.velocity.set(0, 0, 0);
+        promotedPlayer.rotation.set(0, 0, 0);
+        promotedPlayer.mesh.position.copy(promotedPlayer.position);
+        promotedPlayer.applyMeshRotation();
+
+        promotedState.position.copy(promotedPlayer.position);
+        promotedState.velocity.copy(promotedPlayer.velocity);
+        promotedState.rotation.copy(promotedPlayer.rotation);
+
+        const currentTick = this.networkManager?.getCurrentServerTick() ?? 0;
+        const protectionTick = currentTick + Math.ceil(GAME_CONFIG.SPAWN_PROTECTION_SECONDS * GAME_CONFIG.TICK_RATE);
+        this.gameState.setSpawnProtection(nextPigeonPeerId, protectionTick);
+      }
+
+      const roles: { [peerId: string]: PlayerRole } = {};
+      const activePeers: string[] = [];
+      const spawnStates: RoleAssignmentMessage['spawnStates'] = {};
+      const spawnProtectionUntilTick: { [peerId: string]: number } = {};
+      this.gameState.players.forEach((state, id) => {
+        roles[id] = state.role;
+        if (state.active) activePeers.push(id);
+        spawnStates[id] = {
+          position: { x: state.position.x, y: state.position.y, z: state.position.z },
+          rotation: { x: state.rotation.x, y: state.rotation.y, z: state.rotation.z },
+          velocity: { x: state.velocity.x, y: state.velocity.y, z: state.velocity.z },
+        };
+        spawnProtectionUntilTick[id] = state.spawnProtectionUntilTick;
+      });
+
+      this.networkManager?.sendRoleAssignment(roles, {
+        activePeers,
+        spawnStates,
+        reason: 'pigeon_reassigned',
+        spawnProtectionUntilTick,
+      });
+      this.syncRoleControllers();
+      this.showEventPopup('Pigeon reassigned after disconnect', 'warn');
+      return;
+    }
+
+    const activeHawkCount = this.getHawkPlayers()
+      .filter((entry) => this.gameState?.players.get(entry.peerId)?.active)
+      .length;
+    if (this.gameState.roundState === RoundState.PLAYING && activeHawkCount === 0) {
+      this.handleInsufficientPlayers('no hawks remaining');
+      return;
+    }
+
+    this.syncRoleControllers();
+    this.showEventPopup('A player disconnected', 'warn');
+    this.tryStartRoundIfReady();
+  }
+
   private setupDisconnectHandlers(): void {
     if (!this.peerConnection) return;
 
     this.peerConnection.onDisconnected((peerId) => {
       if (this.gameState?.isHost) {
         if (peerId) {
-          this.gameState.players.delete(peerId);
-          this.removeRemotePlayer(peerId);
-          if (this.gameState.remotePeerId === peerId) {
-            const remainingPeerIds = this.peerConnection?.getRemotePeerIds() ?? [];
-            this.gameState.remotePeerId = remainingPeerIds.length > 0 ? remainingPeerIds[0] : null;
-          }
-          this.syncRoleControllers();
-          this.showEventPopup('A player disconnected', 'warn');
+          this.handleHostSideDisconnect(peerId);
+          return;
+        }
+        if (!this.isGameStarted) {
+          this.lobbyUI.showWaiting('Connection paused while app is backgrounded. Keep this tab in foreground until a friend joins.');
+        } else {
+          this.showEventPopup('Network paused. Trying to reconnect...', 'warn');
         }
         return;
       }
@@ -2098,6 +2968,18 @@ export class Game {
       console.log('Peer reconnected');
       const overlay = document.getElementById('disconnect-overlay');
       if (overlay) overlay.style.display = 'none';
+      if (this.gameState?.isHost) {
+        if (!this.isGameStarted) {
+          this.lobbyUI.showWaiting('Invite link is live again. Ask your friend to retry join.');
+        } else {
+          this.showEventPopup('Network connection restored', 'good');
+        }
+      }
+      if (this.gameState && !this.gameState.isHost && this.networkManager) {
+        this.setControlsEnabled(false);
+        this.lobbyUI.showWaiting('Reconnected. Resyncing...');
+        this.networkManager.sendJoinRequest(this.lobbyUI.getEffectiveUsername());
+      }
     });
   }
 
@@ -2192,6 +3074,8 @@ export class Game {
    */
   public dispose(): void {
     window.removeEventListener('keydown', this.debugToggleHandler);
+    document.removeEventListener('visibilitychange', this.visibilityResumeHandler);
+    window.removeEventListener('focus', this.visibilityResumeHandler);
     this.clearRoundCountdownState();
     if (this.ambientLoopId) AudioManager.stop(this.ambientLoopId);
     if (this.windLoopId) AudioManager.stop(this.windLoopId);
@@ -2205,6 +3089,9 @@ export class Game {
     if (this.foodSpawner) this.foodSpawner.dispose();
     if (this.npcSpawner) this.npcSpawner.dispose();
     if (this.environment) this.environment.dispose();
+    if (this.gameState?.isHost && this.networkManager) {
+      this.networkManager.sendHostTerminating('host_shutdown');
+    }
     if (this.peerConnection) this.peerConnection.disconnect();
   }
 }

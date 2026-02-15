@@ -213,11 +213,10 @@ export class LobbyUI {
     this.peerIdInput.value = this.pendingRoomCode ?? '';
     this.pendingRoomCode = null;
     this.joinUsernameInput.value = this.usernameInput.value.trim();
-    if (this.peerIdInput.value) {
-      this.connectBtn.focus();
-      return;
-    }
     this.peerIdInput.focus();
+    if (this.peerIdInput.value) {
+      this.peerIdInput.select();
+    }
   }
 
   /**

@@ -71,7 +71,7 @@ test('host caches input per peer and consumes mouse deltas independently', () =>
     scrollDelta: 0,
   });
   assert.deepEqual(networkManager.getRemoteInput('peer-b'), {
-    forward: -1,
+    forward: 0,
     strafe: 0.5,
     ascend: 0,
     mouseX: -2,
@@ -96,13 +96,57 @@ test('host caches input per peer and consumes mouse deltas independently', () =>
   });
 
   assert.deepEqual(networkManager.getRemoteInput('peer-b'), {
-    forward: -1,
+    forward: 0,
     strafe: 0.5,
     ascend: 0,
     mouseX: 0,
     mouseY: 0,
     scrollDelta: 0,
   });
+});
+
+test('host neutralizes stale remote input after packet gap', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  const originalNow = Date.now;
+  let now = 10_000;
+  Date.now = () => now;
+
+  try {
+    peerConnection.emit(
+      createMessage(MessageType.INPUT_UPDATE, {
+        input: { forward: 1, strafe: 0.3, ascend: 0.2, mouseX: 4, mouseY: -2 },
+      }),
+      'peer-a'
+    );
+
+    assert.deepEqual(networkManager.getRemoteInput('peer-a'), {
+      forward: 1,
+      strafe: 0.3,
+      ascend: 0.2,
+      mouseX: 4,
+      mouseY: -2,
+      scrollDelta: 0,
+    });
+
+    now += 350;
+
+    assert.deepEqual(networkManager.getRemoteInput('peer-a'), {
+      forward: 0,
+      strafe: 0,
+      ascend: 0,
+      mouseX: 0,
+      mouseY: 0,
+      scrollDelta: 0,
+    });
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test('host state sync includes all known players and respects tick interval', () => {
@@ -174,4 +218,184 @@ test('resetRemoteInput clears host input cache', () => {
 
   networkManager.resetRemoteInput();
   assert.equal(networkManager.getRemoteInput('peer-a'), null);
+});
+
+test('host ignores remote input until peer is activated', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+  networkManager.registerPendingPeer('peer-a');
+
+  peerConnection.emit(
+    createMessage(MessageType.INPUT_UPDATE, {
+      input: { forward: 1, strafe: 0.4, ascend: 0, mouseX: 2, mouseY: -1 },
+    }),
+    'peer-a'
+  );
+  assert.equal(networkManager.getRemoteInput('peer-a'), null);
+
+  networkManager.activatePeer('peer-a');
+  peerConnection.emit(
+    createMessage(MessageType.INPUT_UPDATE, {
+      input: { forward: 1, strafe: 0.4, ascend: 0, mouseX: 2, mouseY: -1 },
+    }),
+    'peer-a'
+  );
+  assert.deepEqual(networkManager.getRemoteInput('peer-a'), {
+    forward: 1,
+    strafe: 0.4,
+    ascend: 0,
+    mouseX: 2,
+    mouseY: -1,
+    scrollDelta: 0,
+  });
+});
+
+test('client receives join accept/deny lifecycle messages', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  let joinAcceptRole = null;
+  let joinDenyReason = null;
+  networkManager.onJoinAccept((message) => {
+    joinAcceptRole = message.assignedRole;
+  });
+  networkManager.onJoinDeny((message) => {
+    joinDenyReason = message.reason;
+  });
+
+  peerConnection.emit(
+    createMessage(MessageType.JOIN_ACCEPT, {
+      peerId: 'client-1',
+      assignedRole: PlayerRole.HAWK,
+      worldSeed: 42,
+      roundState: 'lobby',
+      roundNumber: 0,
+    }),
+    'host-1'
+  );
+  assert.equal(joinAcceptRole, PlayerRole.HAWK);
+
+  peerConnection.emit(
+    createMessage(MessageType.JOIN_DENY, {
+      reason: 'room_full',
+    }),
+    'host-1'
+  );
+  assert.equal(joinDenyReason, 'room_full');
+});
+
+test('client removes stale peers that disappear from authoritative sync', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+  gameState.addPlayer('peer-a', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-b', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      serverTick: 20,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 0, y: 5, z: 0 }),
+        'peer-a': makePlayerSnapshot(PlayerRole.PIGEON, { x: 2, y: 5, z: 0 }),
+      },
+    }),
+    'host-1'
+  );
+
+  assert.equal(gameState.players.has('peer-b'), false);
+  assert.deepEqual(networkManager.consumeStalePeerRemovals(), ['peer-b']);
+});
+
+test('client interpolation advances between packets using estimated server tick', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+
+  try {
+    peerConnection.emit(
+      createMessage(MessageType.STATE_SYNC, {
+        serverTick: 100,
+        players: {
+          'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 0, y: 5, z: 0 }),
+          'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 0, y: 5, z: 0 }),
+        },
+      }),
+      'host-1'
+    );
+
+    peerConnection.emit(
+      createMessage(MessageType.STATE_SYNC, {
+        serverTick: 110,
+        players: {
+          'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 0, y: 5, z: 0 }),
+          'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 10, y: 5, z: 0 }),
+        },
+      }),
+      'host-1'
+    );
+
+    const initial = networkManager.getInterpolatedRemoteState('host-1');
+    assert.ok(initial);
+
+    now += 100;
+
+    const progressed = networkManager.getInterpolatedRemoteState('host-1');
+    assert.ok(progressed);
+    assert.ok(progressed.position.x > initial.position.x + 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('client ignores stale out-of-order state sync packets', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      serverTick: 50,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 5, y: 5, z: 5 }),
+      },
+    }),
+    'host-1'
+  );
+
+  const freshAuthoritative = networkManager.getLocalAuthoritativeState();
+  assert.ok(freshAuthoritative);
+  assert.equal(freshAuthoritative.serverTick, 50);
+  assert.equal(freshAuthoritative.position.x, 5);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      serverTick: 45,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: -99, y: 5, z: 5 }),
+      },
+    }),
+    'host-1'
+  );
+
+  const afterStale = networkManager.getLocalAuthoritativeState();
+  assert.ok(afterStale);
+  assert.equal(afterStale.serverTick, 50);
+  assert.equal(afterStale.position.x, 5);
 });

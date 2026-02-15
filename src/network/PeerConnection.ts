@@ -16,17 +16,38 @@ export class PeerConnection {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
   private isReconnecting: boolean = false;
+  private readonly peerConfig = {
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    },
+  };
 
   public async initializeAsHost(roomCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       try {
         const peerId = roomCode ? `birdgame-${roomCode}` : undefined;
-        this.peer = peerId ? new Peer(peerId) : new Peer();
+        this.storedHostPeerId = peerId ?? null;
+        this.peer = peerId ? new Peer(peerId, this.peerConfig) : new Peer(this.peerConfig);
         this.isHost = true;
 
         this.peer.on('open', (id) => {
           console.log('Host peer ID:', id);
-          resolve(id);
+          this.storedHostPeerId = id;
+          if (!settled) {
+            settled = true;
+            resolve(id);
+          }
+          if (this.isReconnecting) {
+            this.isReconnecting = false;
+            this.reconnectAttempts = 0;
+            if (this.onReconnectedCallback) {
+              this.onReconnectedCallback();
+            }
+          }
         });
 
         this.peer.on('connection', (conn) => {
@@ -42,25 +63,40 @@ export class PeerConnection {
             }
           }
 
-          if (this.onConnectedCallback) {
-            this.onConnectedCallback(conn.peer);
+        });
+
+        this.peer.on('disconnected', () => {
+          console.warn('Peer signaling disconnected (host). Attempting to restore room...');
+          this.isReconnecting = true;
+          if (this.onDisconnectedCallback) {
+            this.onDisconnectedCallback();
+          }
+          if (this.peer && !this.peer.destroyed) {
+            this.peer.reconnect();
           }
         });
 
         this.peer.on('error', (error) => {
           console.error('Peer error:', error);
-          reject(error);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
         });
       } catch (error) {
-        reject(error);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       }
     });
   }
 
   public async initializeAsClient(hostPeerId: string): Promise<string> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       try {
-        this.peer = new Peer();
+        this.peer = new Peer(this.peerConfig);
         this.isHost = false;
         this.storedHostPeerId = hostPeerId;
 
@@ -70,15 +106,35 @@ export class PeerConnection {
           const connection = this.peer!.connect(hostPeerId, { reliable: true });
           this.connections.set(hostPeerId, connection);
           this.setupConnectionHandlers(connection);
-          resolve(id);
+          if (!settled) {
+            settled = true;
+            resolve(id);
+          }
+        });
+
+        this.peer.on('disconnected', () => {
+          console.warn('Peer signaling disconnected (client). Attempting to reconnect...');
+          this.isReconnecting = true;
+          if (this.onDisconnectedCallback) {
+            this.onDisconnectedCallback();
+          }
+          if (this.peer && !this.peer.destroyed) {
+            this.peer.reconnect();
+          }
         });
 
         this.peer.on('error', (error) => {
           console.error('Peer error:', error);
-          reject(error);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
         });
       } catch (error) {
-        reject(error);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       }
     });
   }
@@ -89,7 +145,7 @@ export class PeerConnection {
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
 
-      if (!this.isHost && this.onConnectedCallback) {
+      if (this.onConnectedCallback) {
         this.onConnectedCallback(connection.peer);
       }
     });
@@ -136,7 +192,7 @@ export class PeerConnection {
 
     setTimeout(() => {
       if (!this.peer || this.peer.destroyed) {
-        this.peer = new Peer();
+        this.peer = new Peer(this.peerConfig);
         this.peer.on('open', () => this.connectToHost());
         this.peer.on('error', (error) => {
           console.error('Reconnect peer error:', error);
@@ -240,11 +296,29 @@ export class PeerConnection {
   }
 
   public getRemotePeerIds(): string[] {
-    return Array.from(this.connections.keys());
+    return Array.from(this.connections.entries())
+      .filter(([, conn]) => conn.open)
+      .map(([peerId]) => peerId);
+  }
+
+  public closePeer(peerId: string): void {
+    const conn = this.connections.get(peerId);
+    if (!conn) return;
+    conn.close();
+    this.connections.delete(peerId);
   }
 
   public isHostPeer(): boolean {
     return this.isHost;
+  }
+
+  public refreshPresence(): void {
+    if (!this.peer) return;
+    if (this.peer.destroyed) return;
+    if (this.peer.disconnected) {
+      console.log('Refreshing signaling presence...');
+      this.peer.reconnect();
+    }
   }
 
   public disconnect(): void {

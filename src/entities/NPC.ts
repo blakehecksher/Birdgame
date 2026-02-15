@@ -31,6 +31,7 @@ export interface NPCSnapshot {
   rotation: number;
   state: NPCState;
   exists: boolean;
+  respawnTimer?: number;
 }
 
 /**
@@ -480,12 +481,14 @@ export class NPC {
       rotation: this.heading,
       state: this.state,
       exists: this.exists,
+      respawnTimer: this.respawnTimer,
     };
   }
 
   public applySnapshot(snapshot: NPCSnapshot): void {
     this.state = snapshot.state;
     this.exists = snapshot.exists;
+    this.respawnTimer = snapshot.respawnTimer ?? this.respawnTimer;
     this.mesh.visible = this.exists;
 
     if (!this.hasTarget) {

@@ -95,9 +95,10 @@ export class SceneManager {
 
     this.scene.add(ground);
 
-    // Add grid helper for better spatial awareness during development
-    const gridHelper = new THREE.GridHelper(groundSize, 20, 0x888888, 0x444444);
-    this.scene.add(gridHelper);
+    if (GAME_CONFIG.SHOW_DEBUG_GRID) {
+      const gridHelper = new THREE.GridHelper(groundSize, 20, 0x888888, 0x444444);
+      this.scene.add(gridHelper);
+    }
   }
 
   private onWindowResize(): void {

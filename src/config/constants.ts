@@ -1,6 +1,11 @@
 // Game configuration constants
 
 export const GAME_CONFIG = {
+  // Protocol/versioning
+  NETWORK_PROTOCOL_VERSION: 1,
+  MAX_PLAYERS: 4, // 1 pigeon + up to 3 hawks
+  MAX_HAWKS: 3,
+
   // Round settings
   ROUND_DURATION: 180, // 3 minutes in seconds
 
@@ -65,8 +70,25 @@ export const GAME_CONFIG = {
   CAMERA_ZOOM_SPEED: 1.5,
 
   // Network settings
-  TICK_RATE: 30, // Movement updates per second
-  STATE_BUFFER_TIME: 120, // Interpolation delay in milliseconds
+  TICK_RATE: 30, // Authoritative simulation step rate (Hz)
+  INPUT_SEND_RATE: 30, // Client -> host input send rate (Hz)
+  PLAYER_SNAPSHOT_RATE: 20, // Host -> clients dynamic player sync (Hz)
+  NPC_SNAPSHOT_RATE: 12, // Host -> clients NPC sync cadence (Hz)
+  WORLD_KEYFRAME_RATE: 1, // Full world keyframe cadence (Hz)
+  STATE_BUFFER_TIME: 120, // Simple fixed buffer (like GitHub version that worked)
+  INTERPOLATION_BUFFER_MIN_MS: 120,
+  INTERPOLATION_BUFFER_MAX_MS: 120,
+  EXTRAPOLATION_MAX_MS: 50,
+  RECONCILE_SOFT_DISTANCE: 1.4,
+  RECONCILE_HARD_DISTANCE: 10.0,
+  RECONCILE_HARD_ANGLE_DEG: 70,
+  RECONCILE_MAX_TICK_AGE: 12, // ~400ms at 30Hz
+  REMOTE_INPUT_STALE_MS: 300, // Host neutralizes stale client input to avoid runaway desync on packet gaps
+  NETWORK_JOIN_REQUEST_TIMEOUT_MS: 3000,
+  NETWORK_JOIN_READY_TIMEOUT_MS: 5000,
+  SPAWN_PROTECTION_SECONDS: 2.0,
+  HAWK_INPUT_LOCK_SECONDS: 0.8,
+  MAX_INPUT_MOUSE_DELTA: 50,
 
   // Food settings
   FOOD_RESPAWN_TIME: 30, // Seconds
@@ -145,6 +167,7 @@ export const GAME_CONFIG = {
   MOBILE_PIXEL_RATIO_CAP: 1.5,
   MOBILE_SHADOWS_ENABLED: false,
   MOBILE_SHADOW_MAP_SIZE: 512,
+  SHOW_DEBUG_GRID: false,
 } as const;
 
 // Food types
@@ -164,6 +187,7 @@ export enum PlayerRole {
 // Round states
 export enum RoundState {
   LOBBY = 'lobby',
+  WAITING_FOR_PLAYERS = 'waiting_for_players',
   PLAYING = 'playing',
   ENDED = 'ended',
 }

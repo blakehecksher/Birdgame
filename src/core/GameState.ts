@@ -2,6 +2,13 @@ import * as THREE from 'three';
 import { PlayerRole, RoundState, GAME_CONFIG } from '../config/constants';
 import { NPCState, NPCType } from '../entities/NPC';
 
+export enum PlayerConnectionState {
+  CONNECTING = 'connecting',
+  SYNCING = 'syncing',
+  ACTIVE = 'active',
+  DISCONNECTED = 'disconnected',
+}
+
 /**
  * Player state data
  */
@@ -21,6 +28,11 @@ export interface PlayerState {
   // Common
   isEating?: boolean;
   eatingTimer?: number;
+  joinOrder: number;
+  connectionState: PlayerConnectionState;
+  active: boolean;
+  spawnProtectionUntilTick: number;
+  inputLockedUntilTick: number;
 }
 
 /**
@@ -67,6 +79,7 @@ export interface ScoreData {
 export class GameState {
   // Match metadata
   public matchId: string;
+  public worldSeed: number = 1;
   public roundNumber: number = 0;
   public roundStartTime: number = 0;
   public roundDuration: number = GAME_CONFIG.ROUND_DURATION;
@@ -79,6 +92,7 @@ export class GameState {
 
   // Players
   public players: Map<string, PlayerState> = new Map();
+  private joinOrderCounter: number = 0;
 
   // World
   public foods: Map<string, FoodState> = new Map();
@@ -124,6 +138,15 @@ export class GameState {
    * Add a player to the game
    */
   public addPlayer(peerId: string, role: PlayerRole, position?: THREE.Vector3): PlayerState {
+    const existing = this.players.get(peerId);
+    if (existing) {
+      if (position) existing.position.copy(position);
+      existing.role = role;
+      existing.weight = role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
+      existing.energy = role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
+      return existing;
+    }
+
     const playerState: PlayerState = {
       peerId,
       role,
@@ -134,6 +157,11 @@ export class GameState {
       energy: role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined,
       isEating: false,
       eatingTimer: 0,
+      joinOrder: this.joinOrderCounter++,
+      connectionState: PlayerConnectionState.ACTIVE,
+      active: true,
+      spawnProtectionUntilTick: 0,
+      inputLockedUntilTick: 0,
     };
 
     this.players.set(peerId, playerState);
@@ -154,6 +182,8 @@ export class GameState {
       player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
       player.isEating = false;
       player.eatingTimer = 0;
+      player.spawnProtectionUntilTick = 0;
+      player.inputLockedUntilTick = 0;
     });
   }
 
@@ -173,6 +203,72 @@ export class GameState {
       player.weight = player.role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
       player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
     });
+  }
+
+  public setPlayerConnectionState(
+    peerId: string,
+    connectionState: PlayerConnectionState,
+    active: boolean
+  ): void {
+    const player = this.players.get(peerId);
+    if (!player) return;
+    player.connectionState = connectionState;
+    player.active = active;
+  }
+
+  public removePlayer(peerId: string): PlayerState | undefined {
+    const existing = this.players.get(peerId);
+    if (!existing) return undefined;
+    this.players.delete(peerId);
+    return existing;
+  }
+
+  public getActivePlayerCount(): number {
+    let active = 0;
+    this.players.forEach((player) => {
+      if (player.active) active++;
+    });
+    return active;
+  }
+
+  public getPigeonPeerId(): string | null {
+    for (const [peerId, player] of this.players) {
+      if (player.role === PlayerRole.PIGEON) return peerId;
+    }
+    return null;
+  }
+
+  public getHawkPeerIds(): string[] {
+    const hawks: string[] = [];
+    for (const [peerId, player] of this.players) {
+      if (player.role === PlayerRole.HAWK) {
+        hawks.push(peerId);
+      }
+    }
+    return hawks;
+  }
+
+  public getLowestJoinOrderActiveHawk(): string | null {
+    let selected: PlayerState | null = null;
+    for (const player of this.players.values()) {
+      if (!player.active || player.role !== PlayerRole.HAWK) continue;
+      if (!selected || player.joinOrder < selected.joinOrder) {
+        selected = player;
+      }
+    }
+    return selected?.peerId ?? null;
+  }
+
+  public setSpawnProtection(peerId: string, untilTick: number): void {
+    const player = this.players.get(peerId);
+    if (!player) return;
+    player.spawnProtectionUntilTick = Math.max(player.spawnProtectionUntilTick, untilTick);
+  }
+
+  public setInputLock(peerId: string, untilTick: number): void {
+    const player = this.players.get(peerId);
+    if (!player) return;
+    player.inputLockedUntilTick = Math.max(player.inputLockedUntilTick, untilTick);
   }
 
   /**
