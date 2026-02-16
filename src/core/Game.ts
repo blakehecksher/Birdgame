@@ -81,6 +81,10 @@ export class Game {
   private localVisualReconciliationOffset: THREE.Vector3 = new THREE.Vector3();
   private reconciliationScratch: THREE.Vector3 = new THREE.Vector3();
 
+  // Phase 2: FPS-based quality degradation
+  private lowFPSFrameCount: number = 0;
+  private hasReducedTickRate: boolean = false;
+
   // Audio
   private ambientLoopId: string | null = null;
   private windLoopId: string | null = null;
@@ -92,6 +96,7 @@ export class Game {
   private countdownActive: boolean = false;
   private readonly roundCountdownSeconds: number = 3;
   private hostRequestToken: number = 0;
+  private activeRoomCode: string | null = null;
 
   constructor() {
     // Get canvas
@@ -177,6 +182,28 @@ export class Game {
    */
   private normalizeRoomCode(raw: string): string {
     return raw.replace(/^birdgame-/i, '').replace(/\D/g, '').slice(0, 6);
+  }
+
+  private toValidRoomCode(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    const roomCode = this.normalizeRoomCode(raw);
+    return roomCode.length === 6 ? roomCode : null;
+  }
+
+  private getActiveRoomCode(): string | null {
+    if (this.activeRoomCode && this.activeRoomCode.length === 6) {
+      return this.activeRoomCode;
+    }
+    if (!this.gameState) return null;
+
+    const hostPeerId = this.gameState.isHost
+      ? this.gameState.localPeerId
+      : this.gameState.remotePeerId;
+    const roomCode = this.toValidRoomCode(hostPeerId);
+    if (roomCode) {
+      this.activeRoomCode = roomCode;
+    }
+    return roomCode;
   }
 
   /**
@@ -349,8 +376,10 @@ export class Game {
       AudioManager.resume();
       this.lobbyUI.showWaiting('Initializing...');
       this.lobbyUI.getEffectiveUsername();
+      this.activeRoomCode = null;
 
       const roomCode = this.generateRoomCode();
+      this.activeRoomCode = roomCode;
 
       // Initialize peer connection as host with room code
       const peerConnection = new PeerConnection();
@@ -411,6 +440,7 @@ export class Game {
     if (this.isGameStarted) return;
 
     this.hostRequestToken += 1;
+    this.activeRoomCode = null;
     if (this.peerConnection) {
       this.peerConnection.disconnect();
       this.peerConnection = null;
@@ -427,6 +457,7 @@ export class Game {
       AudioManager.resume();
       this.lobbyUI.getEffectiveUsername();
       this.lobbyUI.showConnecting();
+      this.activeRoomCode = null;
 
       // Normalize accepted inputs:
       // - "123456"
@@ -437,6 +468,7 @@ export class Game {
         this.lobbyUI.show();
         return;
       }
+      this.activeRoomCode = roomCode;
       const fullPeerId = `birdgame-${roomCode}`;
 
       // Initialize peer connection as client
@@ -805,6 +837,35 @@ export class Game {
   private update(deltaTime: number): void {
     if (!this.gameState || !this.localPlayer) return;
 
+    // Phase 2: FPS-based quality degradation for struggling hosts
+    if (this.gameState.isHost && this.networkManager) {
+      const fps = deltaTime > 0 ? 1 / deltaTime : 60;
+      const MIN_FPS_THRESHOLD = 30;
+      const LOW_FPS_SUSTAINED_FRAMES = 60; // ~1 second at 60fps
+      const MIN_TICK_RATE = 20;
+
+      if (fps < MIN_FPS_THRESHOLD) {
+        this.lowFPSFrameCount++;
+
+        // If sustained low FPS and we haven't reduced tick rate yet
+        if (this.lowFPSFrameCount > LOW_FPS_SUSTAINED_FRAMES && !this.hasReducedTickRate) {
+          const currentTickRate = this.networkManager.getTickRateHz();
+          if (currentTickRate > MIN_TICK_RATE) {
+            console.warn(
+              `[Game] Sustained low FPS detected (${fps.toFixed(1)}fps), ` +
+              `reducing network tick rate from ${currentTickRate}Hz to ${MIN_TICK_RATE}Hz`
+            );
+            this.networkManager.setTickRate(MIN_TICK_RATE);
+            this.hasReducedTickRate = true;
+            this.lowFPSFrameCount = 0; // Reset counter
+          }
+        }
+      } else {
+        // Good FPS, reset counter
+        this.lowFPSFrameCount = 0;
+      }
+    }
+
     // Get input (locked during countdown)
     const rawInput = this.inputManager.getInputState(deltaTime);
     const input = this.countdownActive
@@ -1090,6 +1151,13 @@ export class Game {
           ? 'Connected to host'
           : (this.peerConnection.getIsReconnecting() ? 'Reconnecting...' : 'Disconnected');
       }
+    }
+
+    const roomCodeHud = document.getElementById('room-code-hud');
+    if (roomCodeHud) {
+      const roomCode = this.getActiveRoomCode();
+      roomCodeHud.textContent = roomCode ? `Room: ${roomCode}` : '';
+      roomCodeHud.style.display = roomCode ? 'block' : 'none';
     }
   }
 

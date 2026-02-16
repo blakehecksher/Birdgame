@@ -3,6 +3,7 @@
  * Handles the pre-game lobby interface for hosting/joining games
  */
 import { PersonalBests, formatBestTime, formatBestWeight } from './personalBests';
+import { DeviceDetector } from '../utils/DeviceDetector';
 
 export const USERNAME_STORAGE_KEY = 'birdgame_username';
 
@@ -128,6 +129,7 @@ export class LobbyUI {
         this.peerIdInput.value = sanitized;
       }
     });
+
     // Copy link button
     const copyBtn = document.getElementById('copy-link-btn');
     if (copyBtn) {
@@ -326,8 +328,14 @@ export class LobbyUI {
     // Also set the old peer ID display for fallback
     this.peerIdDisplay.value = roomCode;
 
+    // Phase 2: Log device info for debugging (not shown in UI)
+    const deviceType = DeviceDetector.getDeviceTypeString();
+    const tickRate = DeviceDetector.getRecommendedTickRate();
+    const isMobile = DeviceDetector.isMobile();
+    console.log(`[LobbyUI] Host device: ${deviceType}, Tick rate: ${tickRate}Hz`);
+
     // Add mobile-specific tip if on mobile device
-    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+    if (isMobile) {
       this.setHostStatus(`
         <div style="margin-top: 10px; padding: 10px; background: rgba(255, 200, 100, 0.2); border-radius: 5px;">
           <strong>📱 Mobile Host Tip:</strong><br>

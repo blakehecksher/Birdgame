@@ -9,6 +9,7 @@ export interface InputState {
   mouseY: number; // Mouse delta Y
   scrollDelta: number; // Scroll wheel delta for camera zoom
   mobilePitchAutoCenter?: boolean; // Touch/mobile-only pitch recenter behavior
+  mobilePitchAxis?: number; // Touch/mobile-only pitch stick axis (-1 to 1)
 }
 
 export class InputManager {
@@ -130,6 +131,9 @@ export class InputManager {
       input.mouseY += touch.mouseY;
       if (touch.mobilePitchAutoCenter) {
         input.mobilePitchAutoCenter = true;
+      }
+      if (typeof touch.mobilePitchAxis === 'number') {
+        input.mobilePitchAxis = touch.mobilePitchAxis;
       }
     }
 

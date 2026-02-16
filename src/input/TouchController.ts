@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { InputState } from '../core/InputManager';
 import { GAME_CONFIG } from '../config/constants';
 
@@ -215,20 +216,30 @@ export class TouchController {
     }
   }
 
-  private mapSmoothedAttitudeToInput(): { strafe: number; mouseY: number } {
+  private mapSmoothedAttitudeToInput(): { strafe: number; mouseY: number; pitchAxis: number } {
     const deadzone = GAME_CONFIG.TOUCH_DEADZONE;
     const magnitude = Math.min(1, Math.hypot(this.smoothedAttitudeX, this.smoothedAttitudeY));
     if (magnitude < deadzone || magnitude <= Number.EPSILON) {
-      return { strafe: 0, mouseY: 0 };
+      return { strafe: 0, mouseY: 0, pitchAxis: 0 };
     }
 
     const normalizedMagnitude = (magnitude - deadzone) / (1 - deadzone);
-    const curvedMagnitude = Math.pow(normalizedMagnitude, GAME_CONFIG.TOUCH_STICK_RESPONSE_EXPONENT);
-    const axisScale = curvedMagnitude / magnitude;
+    const strafeCurvedMagnitude = Math.pow(
+      normalizedMagnitude,
+      GAME_CONFIG.TOUCH_STICK_RESPONSE_EXPONENT
+    );
+    const pitchCurvedMagnitude = Math.pow(
+      normalizedMagnitude,
+      GAME_CONFIG.TOUCH_PITCH_RESPONSE_EXPONENT
+    );
+    const strafeAxisScale = strafeCurvedMagnitude / magnitude;
+    const pitchAxisScale = pitchCurvedMagnitude / magnitude;
+    const pitchAxis = THREE.MathUtils.clamp(this.smoothedAttitudeY * pitchAxisScale, -1, 1);
 
     return {
-      strafe: this.smoothedAttitudeX * axisScale * GAME_CONFIG.TOUCH_STRAFE_SCALE,
-      mouseY: this.smoothedAttitudeY * axisScale * GAME_CONFIG.TOUCH_PITCH_SCALE,
+      strafe: this.smoothedAttitudeX * strafeAxisScale * GAME_CONFIG.TOUCH_STRAFE_SCALE,
+      mouseY: pitchAxis * GAME_CONFIG.TOUCH_PITCH_SCALE,
+      pitchAxis,
     };
   }
 
@@ -236,8 +247,10 @@ export class TouchController {
     const clampedDelta = Math.max(1 / 240, Math.min(0.1, deltaTime));
     this.updateSmoothedState(clampedDelta);
 
-    const { strafe, mouseY } = this.mapSmoothedAttitudeToInput();
-    const frameNormalization = Math.max(0.25, Math.min(2, clampedDelta * 60));
+    const { strafe, mouseY, pitchAxis } = this.mapSmoothedAttitudeToInput();
+    // Keep touch pitch rate frame-rate invariant across typical mobile FPS ranges.
+    // clampedDelta is already bounded to [1/240, 0.1], so this maps to [0.25, 6].
+    const frameNormalization = clampedDelta * 60;
 
     return {
       forward: this.thrustTouchId !== null ? 1 : 0,
@@ -247,6 +260,7 @@ export class TouchController {
       mouseY: mouseY * frameNormalization,
       scrollDelta: 0,
       mobilePitchAutoCenter: true,
+      mobilePitchAxis: pitchAxis,
     };
   }
 

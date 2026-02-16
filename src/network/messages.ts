@@ -75,6 +75,7 @@ export interface InputUpdateMessage extends BaseMessage {
     mouseX: number;
     mouseY: number;
     pitchAutoCenter?: boolean;
+    pitchAxis?: number;
   };
 }
 
