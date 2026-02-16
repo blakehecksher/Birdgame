@@ -4,6 +4,11 @@
 
 Successfully implemented **Phase 1: Low-Risk Responsiveness Tuning** from the netcode improvement plan. All changes are complete, tested, and verified.
 
+## Follow-up Log
+
+For the post-Phase-1 joiner smoothing fix and final user validation, see:
+- [2026-02-15 2349 â€” Phase 1.5 Joiner Jitter Smoothing Fix](2026-02-15%202349%20Phase%201.5%20Joiner%20Jitter%20Smoothing%20Fix.md)
+
 ---
 
 ## Phase 1: Low-Risk Responsiveness Tuning ✅

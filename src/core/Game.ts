@@ -78,6 +78,8 @@ export class Game {
   // Phase 1: Removed lastReconcileTime (now runs every frame)
   private worldSeed: number = 1;
   private currentReconciliationError: number = 0; // Phase 1: Track for debug panel
+  private localVisualReconciliationOffset: THREE.Vector3 = new THREE.Vector3();
+  private reconciliationScratch: THREE.Vector3 = new THREE.Vector3();
 
   // Audio
   private ambientLoopId: string | null = null;
@@ -527,6 +529,7 @@ export class Game {
     // Face toward center (host faces right, client faces left)
     this.localPlayer.rotation.y = this.gameState.isHost ? 0 : Math.PI;
     this.localPlayer.applyMeshRotation();
+    this.localVisualReconciliationOffset.set(0, 0, 0);
     localPlayerState.rotation.y = this.localPlayer.rotation.y;
     this.sceneManager.scene.add(this.localPlayer.mesh);
 
@@ -814,8 +817,16 @@ export class Game {
     // Update local player position from velocity
     this.localPlayer.position.add(this.localPlayer.velocity.clone().multiplyScalar(deltaTime));
 
-    // Phase 1B: Update mesh BEFORE reconciliation (keeps camera smooth)
-    this.localPlayer.mesh.position.copy(this.localPlayer.position);
+    // Smoothly blend visual-only reconciliation offset down to zero.
+    if (this.gameState.isHost) {
+      this.localVisualReconciliationOffset.set(0, 0, 0);
+    } else {
+      const decay = Math.min(1, deltaTime * GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING);
+      this.localVisualReconciliationOffset.multiplyScalar(1 - decay);
+    }
+
+    // Keep local mesh rendering smooth by applying a visual-only offset.
+    this.localPlayer.mesh.position.copy(this.localPlayer.position).add(this.localVisualReconciliationOffset);
     this.localPlayer.applyMeshRotation();
 
     // Handle eating timer (from player.update())
@@ -1753,6 +1764,9 @@ export class Game {
       player.isEating = false;
       player.mesh.position.copy(player.position);
       player.applyMeshRotation();
+      if (peerId === this.gameState!.localPeerId) {
+        this.localVisualReconciliationOffset.set(0, 0, 0);
+      }
 
       playerState.position.copy(player.position);
       playerState.rotation.copy(player.rotation);
@@ -1783,7 +1797,7 @@ export class Game {
 
   /**
    * Reconcile local predicted state with host-authoritative local state.
-   * Phase 1A: Only reconcile internal state, not visual mesh (prevents camera jitter)
+   * Soft reconciliation adjusts simulation state only; hard snaps still correct visuals immediately.
    */
   private reconcileLocalPlayerWithAuthority(deltaTime: number): void {
     if (!this.gameState || this.gameState.isHost || !this.localPlayer || !this.networkManager) return;
@@ -1808,29 +1822,27 @@ export class Game {
       this.localPlayer.position.copy(authoritative.position);
       this.localPlayer.velocity.copy(authoritative.velocity);
       this.localPlayer.rotation.copy(authoritative.rotation);
+      this.localVisualReconciliationOffset.set(0, 0, 0);
 
       // Hard snap also updates mesh (large desync)
       this.localPlayer.mesh.position.copy(this.localPlayer.position);
       this.localPlayer.applyMeshRotation();
     } else if (error > softStartDistance) {
-      // Phase 1A: Soft correction only on internal state (not mesh)
-      // This prevents camera jitter while keeping collision accuracy
+      // Soft correction affects simulation state, while visuals absorb the delta gradually.
       const alpha = Math.min(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, deltaTime * GAME_CONFIG.RECONCILIATION_ALPHA_SCALE);
+      this.reconciliationScratch.copy(this.localPlayer.position);
       this.localPlayer.position.lerp(authoritative.position, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
-      this.localPlayer.rotation.x = THREE.MathUtils.lerp(this.localPlayer.rotation.x, authoritative.rotation.x, alpha);
-      this.localPlayer.rotation.y = this.lerpAngle(this.localPlayer.rotation.y, authoritative.rotation.y, alpha);
-      this.localPlayer.rotation.z = THREE.MathUtils.lerp(this.localPlayer.rotation.z, authoritative.rotation.z, alpha);
 
-      // NOTE: Mesh position NOT updated during soft reconciliation
-      // Mesh position is updated by player movement code (smooth client prediction)
+      // Keep local camera/turn feel stable by avoiding soft rotation reconciliation.
+      this.reconciliationScratch.sub(this.localPlayer.position);
+      this.localVisualReconciliationOffset.add(this.reconciliationScratch);
+      const maxVisualOffset = GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX;
+      if (this.localVisualReconciliationOffset.lengthSq() > (maxVisualOffset * maxVisualOffset)) {
+        this.localVisualReconciliationOffset.setLength(maxVisualOffset);
+      }
     }
     // else: error < dead zone, no correction needed
-  }
-
-  private lerpAngle(current: number, target: number, alpha: number): number {
-    const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
-    return current + (delta * alpha);
   }
 
   /**
@@ -1993,6 +2005,9 @@ export class Game {
       player.isEating = false;
       player.mesh.position.copy(player.position);
       player.applyMeshRotation();
+      if (peerId === this.gameState!.localPeerId) {
+        this.localVisualReconciliationOffset.set(0, 0, 0);
+      }
 
       playerState.position.copy(player.position);
       playerState.rotation.copy(player.rotation);
