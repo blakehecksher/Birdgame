@@ -15,7 +15,7 @@ import {
   createMessage,
 } from './messages';
 import { InputState } from '../core/InputManager';
-import { GAME_CONFIG, PlayerRole } from '../config/constants';
+import { GAME_CONFIG, PlayerRole, RoundState } from '../config/constants';
 import { DeviceDetector } from '../utils/DeviceDetector';
 
 /**
@@ -207,6 +207,8 @@ export class NetworkManager {
    * Apply state sync to game state
    */
   private applyStateSync(message: StateSyncMessage): void {
+    this.syncRoundTimingFromHost(message);
+
     // Update players
     for (const peerId in message.players) {
       const playerData = message.players[peerId];
@@ -302,6 +304,46 @@ export class NetworkManager {
   }
 
   /**
+   * Keep client-side round timer aligned with host using elapsed time rather
+   * than absolute host clock timestamps (which can differ across devices).
+   */
+  private syncRoundTimingFromHost(message: StateSyncMessage): void {
+    if (this.gameState.isHost) return;
+
+    if (typeof message.roundNumber === 'number') {
+      this.gameState.roundNumber = message.roundNumber;
+    }
+    if (typeof message.roundDuration === 'number') {
+      this.gameState.roundDuration = message.roundDuration;
+    }
+    if (typeof message.roundState === 'string') {
+      this.gameState.roundState = message.roundState as RoundState;
+    }
+
+    if (typeof message.roundElapsedMs !== 'number') return;
+
+    const elapsedMs = Math.max(0, message.roundElapsedMs);
+    const estimatedLocalRoundStart = Date.now() - elapsedMs;
+
+    if (!this.gameState.roundStartTime) {
+      this.gameState.setRoundStartTime(estimatedLocalRoundStart);
+      return;
+    }
+
+    const driftMs = estimatedLocalRoundStart - this.gameState.roundStartTime;
+    if (Math.abs(driftMs) > 250) {
+      // Large drift: snap timer baseline back to host-derived value.
+      this.gameState.setRoundStartTime(estimatedLocalRoundStart);
+      return;
+    }
+
+    // Small drift: gently blend to avoid timer jitter from packet delay variance.
+    this.gameState.setRoundStartTime(
+      this.gameState.roundStartTime + (driftMs * 0.2)
+    );
+  }
+
+  /**
    * Send input update to host (client only, called every tick)
    */
   public sendInputUpdate(input: InputState): void {
@@ -375,7 +417,16 @@ export class NetworkManager {
       };
     });
 
-    const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = { players };
+    const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = {
+      players,
+      roundNumber: this.gameState.roundNumber,
+      roundStartTime: this.gameState.roundStartTime,
+      roundDuration: this.gameState.roundDuration,
+      roundState: this.gameState.roundState,
+      roundElapsedMs: this.gameState.roundState === RoundState.PLAYING
+        ? Math.max(0, now - this.gameState.roundStartTime)
+        : 0,
+    };
     const shouldSendWorldState = now - this.lastWorldSyncTime >= this.worldSyncIntervalMs;
 
     if (shouldSendWorldState) {
@@ -778,6 +829,7 @@ export class NetworkManager {
     roundNumber: number,
     roundStartTime: number,
     roundDuration: number,
+    roundState: RoundState,
     roles: { [peerId: string]: PlayerRole },
     playerStates: LateJoinStateMessage['playerStates']
   ): void {
@@ -787,6 +839,7 @@ export class NetworkManager {
       roundNumber,
       roundStartTime,
       roundDuration,
+      roundState,
       roles,
       playerStates,
     });
@@ -815,8 +868,16 @@ export class NetworkManager {
       };
     });
 
+    const now = Date.now();
     const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = {
       players,
+      roundNumber: this.gameState.roundNumber,
+      roundStartTime: this.gameState.roundStartTime,
+      roundDuration: this.gameState.roundDuration,
+      roundState: this.gameState.roundState,
+      roundElapsedMs: this.gameState.roundState === RoundState.PLAYING
+        ? Math.max(0, now - this.gameState.roundStartTime)
+        : 0,
       foods: Array.from(this.gameState.foods.values()).map((food) => ({
         id: food.id,
         type: food.type,
@@ -836,8 +897,8 @@ export class NetworkManager {
 
     const message = createMessage<StateSyncMessage>(MessageType.STATE_SYNC, payload);
     this.peerConnection.send(message);
-    this.lastSyncTime = Date.now();
-    this.lastWorldSyncTime = Date.now();
+    this.lastSyncTime = now;
+    this.lastWorldSyncTime = now;
   }
 
   /**

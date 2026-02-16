@@ -924,11 +924,18 @@ export class Game {
     // --- Per-frame visual/network updates (variable rate) ---
 
     // Smoothly blend visual-only reconciliation offset down to zero.
+    const visualOffsetLimit = this.getVisualOffsetLimitForCurrentContext();
     if (this.gameState.isHost) {
       this.localVisualReconciliationOffset.set(0, 0, 0);
     } else {
-      const decay = Math.min(1, frameDelta * GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING);
+      const damping = this.inputManager.isMobile
+        ? GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING * 1.6
+        : GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING;
+      const decay = Math.min(1, frameDelta * damping);
       this.localVisualReconciliationOffset.multiplyScalar(1 - decay);
+      if (this.localVisualReconciliationOffset.lengthSq() > (visualOffsetLimit * visualOffsetLimit)) {
+        this.localVisualReconciliationOffset.setLength(visualOffsetLimit);
+      }
     }
 
     // Keep local mesh rendering smooth by applying a visual-only offset.
@@ -1645,6 +1652,7 @@ export class Game {
       this.gameState.roundNumber,
       this.gameState.roundStartTime,
       this.gameState.roundDuration,
+      this.gameState.roundState,
       roles,
       playerStates
     );
@@ -2018,8 +2026,17 @@ export class Game {
     // Ignore stale snapshots.
     if (Date.now() - authoritative.timestamp > 300) return;
 
+    const isMobileClient = this.inputManager.isMobile;
     const hardSnapDistance = GAME_CONFIG.HARD_SNAP_THRESHOLD;
-    const softStartDistance = GAME_CONFIG.RECONCILIATION_DEAD_ZONE;
+    const softStartDistance = isMobileClient
+      ? Math.min(GAME_CONFIG.RECONCILIATION_DEAD_ZONE, GAME_CONFIG.RECONCILIATION_MOBILE_DEAD_ZONE)
+      : GAME_CONFIG.RECONCILIATION_DEAD_ZONE;
+    const alphaMax = isMobileClient
+      ? Math.max(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, GAME_CONFIG.RECONCILIATION_MOBILE_ALPHA_MAX)
+      : GAME_CONFIG.RECONCILIATION_ALPHA_MAX;
+    const alphaScale = isMobileClient
+      ? Math.max(GAME_CONFIG.RECONCILIATION_ALPHA_SCALE, GAME_CONFIG.RECONCILIATION_MOBILE_ALPHA_SCALE)
+      : GAME_CONFIG.RECONCILIATION_ALPHA_SCALE;
     const error = this.localPlayer.position.distanceTo(authoritative.position);
 
     // Track for debug panel
@@ -2036,7 +2053,7 @@ export class Game {
       this.localPlayer.applyMeshRotation();
     } else if (error > softStartDistance) {
       // Soft position/velocity correction
-      const alpha = Math.min(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, deltaTime * GAME_CONFIG.RECONCILIATION_ALPHA_SCALE);
+      const alpha = Math.min(alphaMax, deltaTime * alphaScale);
       this.reconciliationScratch.copy(this.localPlayer.position);
       this.localPlayer.position.lerp(authoritative.position, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
@@ -2044,7 +2061,7 @@ export class Game {
       // Visual offset absorbs the position correction for smooth rendering
       this.reconciliationScratch.sub(this.localPlayer.position);
       this.localVisualReconciliationOffset.add(this.reconciliationScratch);
-      const maxVisualOffset = GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX;
+      const maxVisualOffset = this.getVisualOffsetLimitForCurrentContext();
       if (this.localVisualReconciliationOffset.lengthSq() > (maxVisualOffset * maxVisualOffset)) {
         this.localVisualReconciliationOffset.setLength(maxVisualOffset);
       }
@@ -2053,8 +2070,12 @@ export class Game {
     // Soft rotation reconciliation — prevents yaw/pitch drift from accumulating.
     // Uses a gentler alpha than position to keep camera feel stable.
     const ROT_DEAD_ZONE = 0.02;  // ~1.1 degrees
-    const ROT_ALPHA_MAX = 0.15;
-    const ROT_ALPHA_SCALE = 5.0;
+    const ROT_ALPHA_MAX = isMobileClient
+      ? GAME_CONFIG.RECONCILIATION_MOBILE_ROT_ALPHA_MAX
+      : 0.15;
+    const ROT_ALPHA_SCALE = isMobileClient
+      ? GAME_CONFIG.RECONCILIATION_MOBILE_ROT_ALPHA_SCALE
+      : 5.0;
     const rotAlpha = Math.min(ROT_ALPHA_MAX, deltaTime * ROT_ALPHA_SCALE);
 
     // Yaw (rotation.y) — use shortest-path angular correction
@@ -2071,6 +2092,38 @@ export class Game {
     if (Math.abs(pitchError) > ROT_DEAD_ZONE) {
       this.localPlayer.rotation.x += pitchError * rotAlpha;
     }
+  }
+
+  /**
+   * Limit visual-only reconciliation offset so the local view stays close to
+   * host authority during collision-critical moments.
+   */
+  private getVisualOffsetLimitForCurrentContext(): number {
+    let maxVisualOffset = this.inputManager.isMobile
+      ? Math.min(
+        GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX,
+        GAME_CONFIG.RECONCILIATION_MOBILE_VISUAL_OFFSET_MAX
+      )
+      : GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX;
+
+    if (!this.localPlayer || this.localPlayer.role !== PlayerRole.HAWK) {
+      return maxVisualOffset;
+    }
+
+    const pigeon = this.getCurrentPigeon();
+    if (!pigeon) {
+      return maxVisualOffset;
+    }
+
+    const distanceToPigeon = this.localPlayer.position.distanceTo(pigeon.player.position);
+    if (distanceToPigeon <= GAME_CONFIG.RECONCILIATION_COMBAT_LOCK_DISTANCE) {
+      maxVisualOffset = Math.min(
+        maxVisualOffset,
+        GAME_CONFIG.RECONCILIATION_COMBAT_VISUAL_OFFSET_MAX
+      );
+    }
+
+    return maxVisualOffset;
   }
 
   /**
@@ -2261,7 +2314,12 @@ export class Game {
     this.syncNPCStateFromGameState();
 
     const countdownSeconds = message.countdownSeconds ?? this.roundCountdownSeconds;
-    const roundStartAt = message.roundStartAt ?? (Date.now() + (countdownSeconds * 1000));
+    let roundStartAt = Date.now() + (countdownSeconds * 1000);
+    if (typeof message.roundStartAt === 'number') {
+      // Convert host absolute timestamp to local wall-clock using message-relative delay.
+      const hostDelayUntilStartMs = Math.max(0, message.roundStartAt - message.timestamp);
+      roundStartAt = Date.now() + hostDelayUntilStartMs;
+    }
     this.runRoundCountdown(message.roundNumber, roundStartAt, countdownSeconds);
   }
 
@@ -2280,11 +2338,12 @@ export class Game {
       playerCount: Object.keys(message.roles).length,
     });
 
-    // Sync round timer from host so our countdown/timer matches
+    // Sync round timer using host elapsed time so clock skew doesn't desync clients.
     this.gameState.roundNumber = message.roundNumber;
-    this.gameState.setRoundStartTime(message.roundStartTime);
+    const hostElapsedMs = Math.max(0, message.timestamp - message.roundStartTime);
+    this.gameState.setRoundStartTime(Date.now() - hostElapsedMs);
     this.gameState.roundDuration = message.roundDuration;
-    this.gameState.roundState = RoundState.PLAYING;
+    this.gameState.roundState = message.roundState;
 
     // Update roles and player states from host
     for (const [peerId, role] of Object.entries(message.roles)) {

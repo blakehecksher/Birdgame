@@ -1,4 +1,4 @@
-import { PlayerRole } from '../config/constants';
+import { PlayerRole, RoundState } from '../config/constants';
 import { NPCSnapshot, NPCType } from '../entities/NPC';
 
 /**
@@ -87,6 +87,11 @@ export interface InputUpdateMessage extends BaseMessage {
  */
 export interface StateSyncMessage extends BaseMessage {
   type: MessageType.STATE_SYNC;
+  roundNumber?: number;
+  roundStartTime?: number;
+  roundDuration?: number;
+  roundState?: RoundState;
+  roundElapsedMs?: number;
   players: {
     [peerId: string]: {
       position: { x: number; y: number; z: number };
@@ -161,6 +166,7 @@ export interface LateJoinStateMessage extends BaseMessage {
   roundNumber: number;
   roundStartTime: number;  // host's actual Date.now() when round started
   roundDuration: number;
+  roundState: RoundState;
   roles: { [peerId: string]: PlayerRole };
   playerStates: {
     [peerId: string]: {
