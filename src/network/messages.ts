@@ -1,4 +1,4 @@
-import { PlayerRole } from '../config/constants';
+import { PlayerRole, RoundState } from '../config/constants';
 import { NPCSnapshot, NPCType } from '../entities/NPC';
 
 /**
@@ -14,6 +14,9 @@ export enum MessageType {
   // Gameplay - Real-time
   INPUT_UPDATE = 'INPUT_UPDATE',      // Client sends input to host
   STATE_SYNC = 'STATE_SYNC',          // Host sends authoritative state to client
+
+  // Late join
+  LATE_JOIN_STATE = 'LATE_JOIN_STATE', // Host sends full state to late joiner
 
   // Gameplay - Events
   FOOD_COLLECTED = 'FOOD_COLLECTED',
@@ -84,6 +87,11 @@ export interface InputUpdateMessage extends BaseMessage {
  */
 export interface StateSyncMessage extends BaseMessage {
   type: MessageType.STATE_SYNC;
+  roundNumber?: number;
+  roundStartTime?: number;
+  roundDuration?: number;
+  roundState?: RoundState;
+  roundElapsedMs?: number;
   players: {
     [peerId: string]: {
       position: { x: number; y: number; z: number };
@@ -150,6 +158,30 @@ export interface RoundEndMessage extends BaseMessage {
 }
 
 /**
+ * Late-join state message — host sends full game state to a player
+ * who joins mid-round so they start with correct world/timer/roles.
+ */
+export interface LateJoinStateMessage extends BaseMessage {
+  type: MessageType.LATE_JOIN_STATE;
+  roundNumber: number;
+  roundStartTime: number;  // host's actual Date.now() when round started
+  roundDuration: number;
+  roundState: RoundState;
+  roles: { [peerId: string]: PlayerRole };
+  playerStates: {
+    [peerId: string]: {
+      position: { x: number; y: number; z: number };
+      rotation: { x: number; y: number; z: number };
+      velocity: { x: number; y: number; z: number };
+      role: PlayerRole;
+      weight?: number;
+      energy?: number;
+      isEating?: boolean;
+    };
+  };
+}
+
+/**
  * Round start event
  */
 export interface RoundStartMessage extends BaseMessage {
@@ -179,6 +211,7 @@ export type NetworkMessage =
   | GameStartMessage
   | InputUpdateMessage
   | StateSyncMessage
+  | LateJoinStateMessage
   | FoodCollectedMessage
   | NPCKilledMessage
   | PlayerDeathMessage

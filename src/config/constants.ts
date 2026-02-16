@@ -64,6 +64,10 @@ export const GAME_CONFIG = {
   CAMERA_ZOOM_MAX: 12.0,
   CAMERA_ZOOM_SPEED: 1.5,
 
+  // Physics
+  PHYSICS_TIMESTEP: 1 / 60, // Fixed physics step in seconds (60Hz)
+  MAX_PHYSICS_STEPS_PER_FRAME: 4, // Prevent spiral of death on slow devices
+
   // Network settings
   TICK_RATE: 30, // Movement updates per second
   STATE_BUFFER_TIME: 70, // Interpolation delay in milliseconds (Phase 1: reduced from 120ms)
@@ -72,8 +76,16 @@ export const GAME_CONFIG = {
   RECONCILIATION_DEAD_ZONE: 0.3,      // Below this error, no correction (was 0.4, tried 0.15 but too jittery)
   RECONCILIATION_ALPHA_MAX: 0.35,     // Correction strength (was 0.22)
   RECONCILIATION_ALPHA_SCALE: 15.0,   // Multiplier for deltaTime (was 10)
+  RECONCILIATION_MOBILE_DEAD_ZONE: 0.18, // Tighter mobile correction to reduce perceived hitbox mismatch
+  RECONCILIATION_MOBILE_ALPHA_MAX: 0.45,
+  RECONCILIATION_MOBILE_ALPHA_SCALE: 18.0,
   RECONCILIATION_VISUAL_OFFSET_DAMPING: 12.0, // Smoothly decays visual correction offset back to zero
   RECONCILIATION_VISUAL_OFFSET_MAX: 1.0, // Clamp visual correction offset to avoid runaway divergence
+  RECONCILIATION_MOBILE_VISUAL_OFFSET_MAX: 0.35, // Mobile shows less visual-only offset from authority
+  RECONCILIATION_COMBAT_VISUAL_OFFSET_MAX: 0.12, // Near-collision clamp so what player sees matches host checks
+  RECONCILIATION_COMBAT_LOCK_DISTANCE: 8.0,
+  RECONCILIATION_MOBILE_ROT_ALPHA_MAX: 0.28,
+  RECONCILIATION_MOBILE_ROT_ALPHA_SCALE: 8.0,
   HARD_SNAP_THRESHOLD: 5.0,           // Instant teleport above this distance
   EXTRAPOLATION_STALE_THRESHOLD: 200, // Fallback to last position if snapshot > this ms old
 

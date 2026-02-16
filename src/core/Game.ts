@@ -10,7 +10,7 @@ import { Hawk } from '../entities/Hawk';
 import { GameState } from './GameState';
 import { PeerConnection } from '../network/PeerConnection';
 import { NetworkManager } from '../network/NetworkManager';
-import { FoodCollectedMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
+import { FoodCollectedMessage, LateJoinStateMessage, NPCKilledMessage, RoundEndMessage, RoundStartMessage } from '../network/messages';
 import { LobbyUI } from '../ui/LobbyUI';
 import { RoundEndOptions, ScoreUI } from '../ui/ScoreUI';
 import { PlayerRole, RoundState, FoodType, GAME_CONFIG } from '../config/constants';
@@ -80,6 +80,9 @@ export class Game {
   private currentReconciliationError: number = 0; // Phase 1: Track for debug panel
   private localVisualReconciliationOffset: THREE.Vector3 = new THREE.Vector3();
   private reconciliationScratch: THREE.Vector3 = new THREE.Vector3();
+
+  // Fixed-timestep physics accumulator
+  private physicsAccumulator: number = 0;
 
   // Phase 2: FPS-based quality degradation
   private lowFPSFrameCount: number = 0;
@@ -417,8 +420,11 @@ export class Game {
             const remoteState = this.gameState.addPlayer(remotePeerId, PlayerRole.HAWK, spawn);
             remoteState.rotation.y = Math.PI;
             this.ensureRemotePlayer(remotePeerId, PlayerRole.HAWK, spawn, Math.PI);
-            this.syncRoleControllers();
+            // Only add controller for the NEW player — don't reset existing players
+            this.addRoleControllerForPeer(remotePeerId);
           }
+          // Send full game state to the late joiner so they sync world/timer/roles
+          this.sendLateJoinStateToNewPeer(remotePeerId);
           return;
         }
         this.startGame();
@@ -526,6 +532,7 @@ export class Game {
     // Register network event handlers
     this.networkManager.onPlayerDeath((message) => this.handlePlayerDeath(message));
     this.networkManager.onRoundStart((message) => this.handleRoundStart(message));
+    this.networkManager.onLateJoinState((message) => this.handleLateJoinState(message));
     this.networkManager.onFoodCollected((message) => this.handleFoodCollected(message));
     this.networkManager.onNPCKilled((message) => this.handleNPCKilled(message));
     this.networkManager.onRoundEnd((message) => this.handleRoundEnd(message));
@@ -832,22 +839,20 @@ export class Game {
   }
 
   /**
-   * Update game state
+   * Update game state — uses fixed-timestep physics for determinism across platforms.
    */
-  private update(deltaTime: number): void {
+  private update(frameDelta: number): void {
     if (!this.gameState || !this.localPlayer) return;
 
     // Phase 2: FPS-based quality degradation for struggling hosts
     if (this.gameState.isHost && this.networkManager) {
-      const fps = deltaTime > 0 ? 1 / deltaTime : 60;
+      const fps = frameDelta > 0 ? 1 / frameDelta : 60;
       const MIN_FPS_THRESHOLD = 30;
-      const LOW_FPS_SUSTAINED_FRAMES = 60; // ~1 second at 60fps
+      const LOW_FPS_SUSTAINED_FRAMES = 60;
       const MIN_TICK_RATE = 20;
 
       if (fps < MIN_FPS_THRESHOLD) {
         this.lowFPSFrameCount++;
-
-        // If sustained low FPS and we haven't reduced tick rate yet
         if (this.lowFPSFrameCount > LOW_FPS_SUSTAINED_FRAMES && !this.hasReducedTickRate) {
           const currentTickRate = this.networkManager.getTickRateHz();
           if (currentTickRate > MIN_TICK_RATE) {
@@ -857,90 +862,93 @@ export class Game {
             );
             this.networkManager.setTickRate(MIN_TICK_RATE);
             this.hasReducedTickRate = true;
-            this.lowFPSFrameCount = 0; // Reset counter
+            this.lowFPSFrameCount = 0;
           }
         }
       } else {
-        // Good FPS, reset counter
         this.lowFPSFrameCount = 0;
       }
     }
 
-    // Get input (locked during countdown)
-    const rawInput = this.inputManager.getInputState(deltaTime);
+    // --- Read input once per render frame ---
+    const rawInput = this.inputManager.getInputState(frameDelta);
     const input = this.countdownActive
       ? { ...rawInput, forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0 }
       : rawInput;
 
-    // Apply flight controls to local player
-    this.flightController.applyInput(this.localPlayer, input, deltaTime);
+    // --- Read remote inputs once per frame (host only) ---
+    // Remote inputs contain accumulated mouse deltas; consume them now and
+    // distribute evenly across physics steps.
+    const remoteInputs = new Map<string, import('./InputManager').InputState>();
+    if (this.gameState.isHost && this.networkManager) {
+      for (const [peerId] of this.remotePlayers) {
+        const ri = this.networkManager.getRemoteInput(peerId);
+        if (ri) remoteInputs.set(peerId, ri);
+      }
+    }
 
-    // Update local player position from velocity
-    this.localPlayer.position.add(this.localPlayer.velocity.clone().multiplyScalar(deltaTime));
+    // --- Fixed-timestep physics ---
+    const PHYSICS_DT = GAME_CONFIG.PHYSICS_TIMESTEP;
+    const MAX_STEPS = GAME_CONFIG.MAX_PHYSICS_STEPS_PER_FRAME;
+
+    this.physicsAccumulator += frameDelta;
+    // Cap accumulator to prevent spiral of death
+    const maxAccumulated = PHYSICS_DT * MAX_STEPS;
+    if (this.physicsAccumulator > maxAccumulated) {
+      this.physicsAccumulator = maxAccumulated;
+    }
+
+    const numSteps = Math.floor(this.physicsAccumulator / PHYSICS_DT);
+    if (numSteps > 0) {
+      // Split mouse deltas evenly across physics steps
+      const stepInput = { ...input };
+      stepInput.mouseX = input.mouseX / numSteps;
+      stepInput.mouseY = input.mouseY / numSteps;
+
+      // Split remote mouse deltas across steps too
+      const stepRemoteInputs = new Map<string, import('./InputManager').InputState>();
+      for (const [peerId, ri] of remoteInputs) {
+        stepRemoteInputs.set(peerId, {
+          ...ri,
+          mouseX: ri.mouseX / numSteps,
+          mouseY: ri.mouseY / numSteps,
+        });
+      }
+
+      for (let step = 0; step < numSteps; step++) {
+        this.physicsStep(PHYSICS_DT, stepInput, stepRemoteInputs);
+        this.physicsAccumulator -= PHYSICS_DT;
+      }
+    }
+
+    // --- Per-frame visual/network updates (variable rate) ---
 
     // Smoothly blend visual-only reconciliation offset down to zero.
+    const visualOffsetLimit = this.getVisualOffsetLimitForCurrentContext();
     if (this.gameState.isHost) {
       this.localVisualReconciliationOffset.set(0, 0, 0);
     } else {
-      const decay = Math.min(1, deltaTime * GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING);
+      const damping = this.inputManager.isMobile
+        ? GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING * 1.6
+        : GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING;
+      const decay = Math.min(1, frameDelta * damping);
       this.localVisualReconciliationOffset.multiplyScalar(1 - decay);
+      if (this.localVisualReconciliationOffset.lengthSq() > (visualOffsetLimit * visualOffsetLimit)) {
+        this.localVisualReconciliationOffset.setLength(visualOffsetLimit);
+      }
     }
 
     // Keep local mesh rendering smooth by applying a visual-only offset.
     this.localPlayer.mesh.position.copy(this.localPlayer.position).add(this.localVisualReconciliationOffset);
     this.localPlayer.applyMeshRotation();
 
-    // Handle eating timer (from player.update())
-    if (this.localPlayer.isEating) {
-      this.localPlayer.eatingTimer -= deltaTime;
-      if (this.localPlayer.eatingTimer <= 0) {
-        this.localPlayer.isEating = false;
-        this.localPlayer.eatingTimer = 0;
-      }
-    }
-
-    // NOTE: We don't call this.localPlayer.update() because it would
-    // update the mesh AFTER reconciliation, causing camera jitter
-
-    // Check building collisions for local player
-    if (this.environment) {
-      this.environment.checkAndResolveCollisions(
-        this.localPlayer.position,
-        this.localPlayer.radius,
-        this.localPlayer.velocity
-      );
-      if (this.localPlayer.role === PlayerRole.HAWK) {
-        this.environment.applyHawkCanopySlow(
-          this.localPlayer.position,
-          this.localPlayer.radius,
-          this.localPlayer.velocity,
-          deltaTime
-        );
-      }
-    }
-
-    // Keep local role behavior responsive on all peers; host remains authoritative.
-    this.updateRoleStats(this.localPlayer, deltaTime, this.gameState.isHost);
-
-    if (this.foodSpawner) {
-      this.foodSpawner.update(deltaTime);
-    }
+    // NPC visual interpolation (client only, runs at frame rate for smooth visuals)
     if (this.npcSpawner) {
       if (this.gameState.isHost) {
-        if (this.gameState.roundState === RoundState.PLAYING) {
-          const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK
-            ? this.localPlayer
-            : (this.getHawkPlayers()[0]?.player ?? null);
-          const buildingBounds = this.environment
-            ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
-            : [];
-          this.npcSpawner.update(deltaTime, hawkPlayer?.position ?? null, buildingBounds);
-        }
         this.syncNPCStateToGameState();
       } else {
         this.syncNPCStateFromGameState();
-        // Smoothly interpolate NPC visuals between network snapshots
-        this.npcSpawner.updateVisuals(deltaTime);
+        this.npcSpawner.updateVisuals(frameDelta);
       }
     }
 
@@ -960,32 +968,8 @@ export class Game {
     // Network updates
     if (this.networkManager) {
       if (this.gameState.isHost) {
-        // Host: Apply each remote player's input and simulate them authoritatively.
+        // Host: sync remote player game state (physics already ran in physicsStep)
         for (const [peerId, remotePlayer] of this.remotePlayers) {
-          const remoteInput = this.networkManager.getRemoteInput(peerId);
-          if (remoteInput && !this.countdownActive) {
-            this.flightController.applyInput(remotePlayer, remoteInput, deltaTime);
-          }
-          remotePlayer.update(deltaTime);
-
-          if (this.environment) {
-            this.environment.checkAndResolveCollisions(
-              remotePlayer.position,
-              remotePlayer.radius,
-              remotePlayer.velocity
-            );
-            if (remotePlayer.role === PlayerRole.HAWK) {
-              this.environment.applyHawkCanopySlow(
-                remotePlayer.position,
-                remotePlayer.radius,
-                remotePlayer.velocity,
-                deltaTime
-              );
-            }
-          }
-
-          this.updateRoleStats(remotePlayer, deltaTime, true);
-
           const remotePlayerState = this.gameState.players.get(peerId);
           if (remotePlayerState) {
             remotePlayerState.position.copy(remotePlayer.position);
@@ -998,8 +982,6 @@ export class Game {
         }
 
         this.syncFoodStateToGameState();
-
-        // Send state sync to all connected clients.
         this.networkManager.sendStateSync();
       } else {
         // Client: Send input to host
@@ -1030,7 +1012,7 @@ export class Game {
 
         this.syncVisualStatsFromGameState();
         this.syncFoodStateFromGameState();
-        this.reconcileLocalPlayerWithAuthority(deltaTime);
+        this.reconcileLocalPlayerWithAuthority(frameDelta);
       }
     }
 
@@ -1038,7 +1020,6 @@ export class Game {
     if (this.gameState.isHost && this.gameState.roundState === RoundState.PLAYING) {
       this.checkCollisions();
 
-      // Check if round timer expired (pigeon survives)
       if (this.gameState.isRoundTimeUp()) {
         this.endRoundPigeonSurvived();
       }
@@ -1052,6 +1033,111 @@ export class Game {
 
     // Update HUD
     this.updateHUD();
+  }
+
+  /**
+   * Fixed-timestep physics step. Runs at a constant rate (60Hz) regardless
+   * of frame rate, ensuring deterministic physics across platforms.
+   * Mouse deltas should already be divided by the number of steps.
+   */
+  private physicsStep(
+    dt: number,
+    input: import('./InputManager').InputState,
+    remoteInputs: Map<string, import('./InputManager').InputState>
+  ): void {
+    if (!this.gameState || !this.localPlayer) return;
+
+    // === Local player physics ===
+    this.flightController.applyInput(this.localPlayer, input, dt);
+    this.localPlayer.position.addScaledVector(this.localPlayer.velocity, dt);
+
+    // Eating timer
+    if (this.localPlayer.isEating) {
+      this.localPlayer.eatingTimer -= dt;
+      if (this.localPlayer.eatingTimer <= 0) {
+        this.localPlayer.isEating = false;
+        this.localPlayer.eatingTimer = 0;
+      }
+    }
+
+    // Building collisions
+    if (this.environment) {
+      this.environment.checkAndResolveCollisions(
+        this.localPlayer.position,
+        this.localPlayer.radius,
+        this.localPlayer.velocity
+      );
+      if (this.localPlayer.role === PlayerRole.HAWK) {
+        this.environment.applyHawkCanopySlow(
+          this.localPlayer.position,
+          this.localPlayer.radius,
+          this.localPlayer.velocity,
+          dt
+        );
+      }
+    }
+
+    // Role stats
+    this.updateRoleStats(this.localPlayer, dt, this.gameState.isHost);
+
+    // === Host: remote player physics ===
+    if (this.gameState.isHost) {
+      for (const [peerId, remotePlayer] of this.remotePlayers) {
+        const remoteInput = remoteInputs.get(peerId);
+        if (remoteInput && !this.countdownActive) {
+          this.flightController.applyInput(remotePlayer, remoteInput, dt);
+        }
+
+        // Position integration + eating timer
+        remotePlayer.position.addScaledVector(remotePlayer.velocity, dt);
+        if (remotePlayer.isEating) {
+          remotePlayer.eatingTimer -= dt;
+          if (remotePlayer.eatingTimer <= 0) {
+            remotePlayer.isEating = false;
+            remotePlayer.eatingTimer = 0;
+          }
+        }
+        remotePlayer.mesh.position.copy(remotePlayer.position);
+        remotePlayer.applyMeshRotation();
+
+        if (this.environment) {
+          this.environment.checkAndResolveCollisions(
+            remotePlayer.position,
+            remotePlayer.radius,
+            remotePlayer.velocity
+          );
+          if (remotePlayer.role === PlayerRole.HAWK) {
+            this.environment.applyHawkCanopySlow(
+              remotePlayer.position,
+              remotePlayer.radius,
+              remotePlayer.velocity,
+              dt
+            );
+          }
+        }
+
+        this.updateRoleStats(remotePlayer, dt, true);
+      }
+
+      // Food and NPC simulation at fixed rate
+      if (this.foodSpawner) {
+        this.foodSpawner.update(dt);
+      }
+      if (this.npcSpawner && this.gameState.roundState === RoundState.PLAYING) {
+        const hawkPlayer = this.localPlayer.role === PlayerRole.HAWK
+          ? this.localPlayer
+          : (this.getHawkPlayers()[0]?.player ?? null);
+        const buildingBounds = this.environment
+          ? this.environment.buildings.map((building) => ({ min: building.min, max: building.max }))
+          : [];
+        this.npcSpawner.update(dt, hawkPlayer?.position ?? null, buildingBounds);
+      }
+    } else {
+      // Client: food spawner update at fixed rate for respawn timers
+      if (this.foodSpawner) {
+        this.foodSpawner.update(dt);
+      }
+    }
   }
 
   /**
@@ -1515,6 +1601,70 @@ export class Game {
   }
 
   /**
+   * Add a role controller for a single peer without touching any existing players.
+   * Used on late-join so the already-connected player's weight/speed/scale are preserved.
+   */
+  private addRoleControllerForPeer(peerId: string): void {
+    if (!this.gameState) return;
+    const player = this.getPlayerByPeerId(peerId);
+    if (!player) return;
+
+    if (peerId === this.gameState.localPeerId) {
+      if (player.role === PlayerRole.PIGEON) {
+        this.localPigeon = new Pigeon(player);
+      } else {
+        this.localHawk = new Hawk(player);
+      }
+    } else {
+      if (player.role === PlayerRole.PIGEON) {
+        this.remotePigeons.set(peerId, new Pigeon(player));
+      } else {
+        this.remoteHawks.set(peerId, new Hawk(player));
+      }
+    }
+  }
+
+  /**
+   * Send a LATE_JOIN_STATE message and an immediate full STATE_SYNC
+   * so the late joiner starts with correct timer, roles, and world state.
+   */
+  private sendLateJoinStateToNewPeer(peerId: string): void {
+    if (!this.gameState || !this.networkManager) return;
+
+    const roles: { [pid: string]: PlayerRole } = {};
+    const playerStates: LateJoinStateMessage['playerStates'] = {};
+
+    this.gameState.players.forEach((ps, pid) => {
+      roles[pid] = ps.role;
+      playerStates[pid] = {
+        position: { x: ps.position.x, y: ps.position.y, z: ps.position.z },
+        rotation: { x: ps.rotation.x, y: ps.rotation.y, z: ps.rotation.z },
+        velocity: { x: ps.velocity.x, y: ps.velocity.y, z: ps.velocity.z },
+        role: ps.role,
+        weight: ps.weight,
+        energy: ps.energy,
+        isEating: ps.isEating,
+      };
+    });
+
+    this.networkManager.sendLateJoinState(
+      peerId,
+      this.gameState.roundNumber,
+      this.gameState.roundStartTime,
+      this.gameState.roundDuration,
+      this.gameState.roundState,
+      roles,
+      playerStates
+    );
+
+    // Also send an immediate full state sync (with food + NPC data)
+    // so the joiner doesn't wait for the next world sync interval.
+    this.syncFoodStateToGameState();
+    this.syncNPCStateToGameState();
+    this.networkManager.sendImmediateFullSync();
+  }
+
+  /**
    * Update per-role stats on host.
    */
   private updateRoleStats(player: Player, deltaTime: number, authoritative: boolean): void {
@@ -1870,47 +2020,110 @@ export class Game {
   private reconcileLocalPlayerWithAuthority(deltaTime: number): void {
     if (!this.gameState || this.gameState.isHost || !this.localPlayer || !this.networkManager) return;
 
-    // Phase 1: Run every frame (removed 30Hz throttle)
     const authoritative = this.networkManager.getLocalAuthoritativeState();
     if (!authoritative) return;
 
     // Ignore stale snapshots.
     if (Date.now() - authoritative.timestamp > 300) return;
 
-    // Phase 1: Use constants from config
+    const isMobileClient = this.inputManager.isMobile;
     const hardSnapDistance = GAME_CONFIG.HARD_SNAP_THRESHOLD;
-    const softStartDistance = GAME_CONFIG.RECONCILIATION_DEAD_ZONE;
+    const softStartDistance = isMobileClient
+      ? Math.min(GAME_CONFIG.RECONCILIATION_DEAD_ZONE, GAME_CONFIG.RECONCILIATION_MOBILE_DEAD_ZONE)
+      : GAME_CONFIG.RECONCILIATION_DEAD_ZONE;
+    const alphaMax = isMobileClient
+      ? Math.max(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, GAME_CONFIG.RECONCILIATION_MOBILE_ALPHA_MAX)
+      : GAME_CONFIG.RECONCILIATION_ALPHA_MAX;
+    const alphaScale = isMobileClient
+      ? Math.max(GAME_CONFIG.RECONCILIATION_ALPHA_SCALE, GAME_CONFIG.RECONCILIATION_MOBILE_ALPHA_SCALE)
+      : GAME_CONFIG.RECONCILIATION_ALPHA_SCALE;
     const error = this.localPlayer.position.distanceTo(authoritative.position);
 
-    // Track for debug panel (picked up by updateDebugStats)
+    // Track for debug panel
     this.currentReconciliationError = error;
 
     if (error > hardSnapDistance) {
-      // Hard snap (server correction needed immediately)
+      // Hard snap — teleport to authoritative state
       this.localPlayer.position.copy(authoritative.position);
       this.localPlayer.velocity.copy(authoritative.velocity);
       this.localPlayer.rotation.copy(authoritative.rotation);
       this.localVisualReconciliationOffset.set(0, 0, 0);
 
-      // Hard snap also updates mesh (large desync)
       this.localPlayer.mesh.position.copy(this.localPlayer.position);
       this.localPlayer.applyMeshRotation();
     } else if (error > softStartDistance) {
-      // Soft correction affects simulation state, while visuals absorb the delta gradually.
-      const alpha = Math.min(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, deltaTime * GAME_CONFIG.RECONCILIATION_ALPHA_SCALE);
+      // Soft position/velocity correction
+      const alpha = Math.min(alphaMax, deltaTime * alphaScale);
       this.reconciliationScratch.copy(this.localPlayer.position);
       this.localPlayer.position.lerp(authoritative.position, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
 
-      // Keep local camera/turn feel stable by avoiding soft rotation reconciliation.
+      // Visual offset absorbs the position correction for smooth rendering
       this.reconciliationScratch.sub(this.localPlayer.position);
       this.localVisualReconciliationOffset.add(this.reconciliationScratch);
-      const maxVisualOffset = GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX;
+      const maxVisualOffset = this.getVisualOffsetLimitForCurrentContext();
       if (this.localVisualReconciliationOffset.lengthSq() > (maxVisualOffset * maxVisualOffset)) {
         this.localVisualReconciliationOffset.setLength(maxVisualOffset);
       }
     }
-    // else: error < dead zone, no correction needed
+
+    // Soft rotation reconciliation — prevents yaw/pitch drift from accumulating.
+    // Uses a gentler alpha than position to keep camera feel stable.
+    const ROT_DEAD_ZONE = 0.02;  // ~1.1 degrees
+    const ROT_ALPHA_MAX = isMobileClient
+      ? GAME_CONFIG.RECONCILIATION_MOBILE_ROT_ALPHA_MAX
+      : 0.15;
+    const ROT_ALPHA_SCALE = isMobileClient
+      ? GAME_CONFIG.RECONCILIATION_MOBILE_ROT_ALPHA_SCALE
+      : 5.0;
+    const rotAlpha = Math.min(ROT_ALPHA_MAX, deltaTime * ROT_ALPHA_SCALE);
+
+    // Yaw (rotation.y) — use shortest-path angular correction
+    const yawError = Math.atan2(
+      Math.sin(authoritative.rotation.y - this.localPlayer.rotation.y),
+      Math.cos(authoritative.rotation.y - this.localPlayer.rotation.y)
+    );
+    if (Math.abs(yawError) > ROT_DEAD_ZONE) {
+      this.localPlayer.rotation.y += yawError * rotAlpha;
+    }
+
+    // Pitch (rotation.x) — simpler linear correction
+    const pitchError = authoritative.rotation.x - this.localPlayer.rotation.x;
+    if (Math.abs(pitchError) > ROT_DEAD_ZONE) {
+      this.localPlayer.rotation.x += pitchError * rotAlpha;
+    }
+  }
+
+  /**
+   * Limit visual-only reconciliation offset so the local view stays close to
+   * host authority during collision-critical moments.
+   */
+  private getVisualOffsetLimitForCurrentContext(): number {
+    let maxVisualOffset = this.inputManager.isMobile
+      ? Math.min(
+        GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX,
+        GAME_CONFIG.RECONCILIATION_MOBILE_VISUAL_OFFSET_MAX
+      )
+      : GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_MAX;
+
+    if (!this.localPlayer || this.localPlayer.role !== PlayerRole.HAWK) {
+      return maxVisualOffset;
+    }
+
+    const pigeon = this.getCurrentPigeon();
+    if (!pigeon) {
+      return maxVisualOffset;
+    }
+
+    const distanceToPigeon = this.localPlayer.position.distanceTo(pigeon.player.position);
+    if (distanceToPigeon <= GAME_CONFIG.RECONCILIATION_COMBAT_LOCK_DISTANCE) {
+      maxVisualOffset = Math.min(
+        maxVisualOffset,
+        GAME_CONFIG.RECONCILIATION_COMBAT_VISUAL_OFFSET_MAX
+      );
+    }
+
+    return maxVisualOffset;
   }
 
   /**
@@ -2101,8 +2314,88 @@ export class Game {
     this.syncNPCStateFromGameState();
 
     const countdownSeconds = message.countdownSeconds ?? this.roundCountdownSeconds;
-    const roundStartAt = message.roundStartAt ?? (Date.now() + (countdownSeconds * 1000));
+    let roundStartAt = Date.now() + (countdownSeconds * 1000);
+    if (typeof message.roundStartAt === 'number') {
+      // Convert host absolute timestamp to local wall-clock using message-relative delay.
+      const hostDelayUntilStartMs = Math.max(0, message.roundStartAt - message.timestamp);
+      roundStartAt = Date.now() + hostDelayUntilStartMs;
+    }
     this.runRoundCountdown(message.roundNumber, roundStartAt, countdownSeconds);
+  }
+
+  /**
+   * Handle late-join state from host (client only).
+   * Syncs the round timer, player roles, positions, and world state
+   * so the late joiner starts in the correct game state.
+   */
+  private handleLateJoinState(message: LateJoinStateMessage): void {
+    if (this.gameState?.isHost) return;
+    if (!this.gameState || !this.localPlayer) return;
+
+    console.log('[LateJoin] Received game state from host:', {
+      roundNumber: message.roundNumber,
+      roundDuration: message.roundDuration,
+      playerCount: Object.keys(message.roles).length,
+    });
+
+    // Sync round timer using host elapsed time so clock skew doesn't desync clients.
+    this.gameState.roundNumber = message.roundNumber;
+    const hostElapsedMs = Math.max(0, message.timestamp - message.roundStartTime);
+    this.gameState.setRoundStartTime(Date.now() - hostElapsedMs);
+    this.gameState.roundDuration = message.roundDuration;
+    this.gameState.roundState = message.roundState;
+
+    // Update roles and player states from host
+    for (const [peerId, role] of Object.entries(message.roles)) {
+      const ps = message.playerStates[peerId];
+      if (!ps) continue;
+
+      const state = this.gameState.players.get(peerId)
+        ?? this.gameState.addPlayer(peerId, role as PlayerRole);
+      state.role = role as PlayerRole;
+      if (ps.position) {
+        state.position.set(ps.position.x, ps.position.y, ps.position.z);
+      }
+      if (ps.rotation) {
+        state.rotation.set(ps.rotation.x, ps.rotation.y, ps.rotation.z);
+      }
+      if (ps.velocity) {
+        state.velocity.set(ps.velocity.x, ps.velocity.y, ps.velocity.z);
+      }
+      state.weight = ps.weight;
+      state.energy = ps.energy;
+      state.isEating = ps.isEating;
+    }
+
+    // Sync remote player visuals
+    this.syncRemotePlayersFromGameState();
+
+    // Apply positions from host snapshot
+    for (const [peerId, ps] of Object.entries(message.playerStates)) {
+      const player = this.getPlayerByPeerId(peerId);
+      if (!player || !ps) continue;
+
+      if (ps.position) {
+        player.position.set(ps.position.x, ps.position.y, ps.position.z);
+      }
+      if (ps.rotation) {
+        player.rotation.set(ps.rotation.x, ps.rotation.y, ps.rotation.z);
+      }
+      if (ps.velocity) {
+        player.velocity.set(ps.velocity.x, ps.velocity.y, ps.velocity.z);
+      }
+      player.role = ps.role as PlayerRole;
+      player.mesh.position.copy(player.position);
+      player.applyMeshRotation();
+
+      if (peerId === this.gameState.localPeerId) {
+        this.localVisualReconciliationOffset.set(0, 0, 0);
+      }
+    }
+
+    // Rebuild controllers with correct weight/energy from host
+    this.syncRoleControllers();
+    this.syncVisualStatsFromGameState();
   }
 
   /**
