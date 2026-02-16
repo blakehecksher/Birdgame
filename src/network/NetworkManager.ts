@@ -79,6 +79,10 @@ export class NetworkManager {
    */
   private handleMessage(message: NetworkMessage, peerId: string): void {
     switch (message.type) {
+      case MessageType.PING:
+        // Silently ignore keep-alive pings
+        break;
+
       case MessageType.INPUT_UPDATE:
         this.handleInputUpdate(message as InputUpdateMessage, peerId);
         break;
@@ -474,9 +478,23 @@ export class NetworkManager {
 
     // Extrapolate a short distance from the latest snapshot if needed.
     const latest = snapshots[snapshots.length - 1];
+    const extrapolationAge = renderTimestamp - latest.timestamp;
+
+    // Phase 1: If snapshot is too stale (>200ms), just snap to last position
+    // Don't extrapolate into nonsense
+    if (extrapolationAge > GAME_CONFIG.EXTRAPOLATION_STALE_THRESHOLD) {
+      return {
+        position: new THREE.Vector3(latest.position.x, latest.position.y, latest.position.z),
+        rotation: new THREE.Euler(latest.rotation.x, latest.rotation.y, latest.rotation.z),
+        velocity: new THREE.Vector3(latest.velocity.x, latest.velocity.y, latest.velocity.z),
+        role: latest.role,
+        isEating: latest.isEating,
+      };
+    }
+
     const extrapolationSeconds = Math.max(
       0,
-      Math.min(0.1, (renderTimestamp - latest.timestamp) / 1000)
+      Math.min(0.1, extrapolationAge / 1000)
     );
 
     return {
@@ -668,5 +686,25 @@ export class NetworkManager {
    */
   public onRoundEnd(callback: (message: RoundEndMessage) => void): void {
     this.onRoundEndCallback = callback;
+  }
+
+  /**
+   * Get debug stats for the network debug panel
+   */
+  public getDebugStats(): any {
+    // Calculate basic stats from state buffer
+    const bufferSize = this.stateBuffer.length;
+
+    // Stub values - to be enhanced with actual metrics tracking
+    return {
+      rtt: 0, // To be calculated from ping/pong
+      jitter: 0, // To be calculated from RTT variance
+      packetLoss: 0, // To be tracked
+      reconciliationError: 0, // To be tracked in Game.ts
+      interpolationBufferSize: bufferSize,
+      interpolationUnderruns: 0, // To be tracked
+      extrapolationCount: 0, // To be tracked
+      tickRate: Math.round(1000 / this.tickRate),
+    };
   }
 }

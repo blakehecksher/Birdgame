@@ -221,6 +221,41 @@ export class Player {
   }
 
   /**
+   * Update collision debug visualization visibility
+   */
+  public setCollisionDebugVisible(visible: boolean): void {
+    const isPigeon = this.role === 'pigeon';
+
+    // Remove existing debug mesh
+    if (this.debugMesh) {
+      this.mesh.remove(this.debugMesh);
+      this.debugMesh.geometry.dispose();
+      (this.debugMesh.material as THREE.Material).dispose();
+      this.debugMesh = null;
+    }
+
+    // Create new debug mesh if visible
+    if (visible) {
+      const geo = new THREE.SphereGeometry(1, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: isPigeon ? 0x00aaff : 0xff4400,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.4,
+        depthTest: false,
+      });
+      this.debugMesh = new THREE.Mesh(geo, mat);
+      this.debugMesh.scale.set(
+        this.baseCollisionRadii.x,
+        this.baseCollisionRadii.y,
+        this.baseCollisionRadii.z,
+      );
+      this.debugMesh.renderOrder = 999;
+      this.mesh.add(this.debugMesh);
+    }
+  }
+
+  /**
    * Swap the visual model (e.g. on role change between rounds).
    * Disposes old children and replaces with new model content.
    */

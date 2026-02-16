@@ -359,6 +359,7 @@ export class NPC {
       (this.debugMesh.material as THREE.Material).dispose();
       this.debugMesh = null;
     }
+    // Only create if enabled (will be controlled by Game.ts)
     if (!GAME_CONFIG.SHOW_COLLISION_DEBUG) return;
 
     const geo = new THREE.SphereGeometry(1, 16, 12);
@@ -373,6 +374,33 @@ export class NPC {
     this.debugMesh.scale.setScalar(this.radius);
     this.debugMesh.renderOrder = 998;
     this.mesh.add(this.debugMesh);
+  }
+
+  /**
+   * Public method to toggle collision debug visibility
+   */
+  public setCollisionDebugVisible(visible: boolean): void {
+    if (this.debugMesh) {
+      this.mesh.remove(this.debugMesh);
+      this.debugMesh.geometry.dispose();
+      (this.debugMesh.material as THREE.Material).dispose();
+      this.debugMesh = null;
+    }
+
+    if (visible) {
+      const geo = new THREE.SphereGeometry(1, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: this.getDebugColorByType(),
+        wireframe: true,
+        transparent: true,
+        opacity: 0.4,
+        depthTest: false,
+      });
+      this.debugMesh = new THREE.Mesh(geo, mat);
+      this.debugMesh.scale.setScalar(this.radius);
+      this.debugMesh.renderOrder = 998;
+      this.mesh.add(this.debugMesh);
+    }
   }
 
   private getGroundHeight(): number {
