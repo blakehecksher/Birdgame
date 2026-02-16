@@ -15,6 +15,9 @@ export enum MessageType {
   INPUT_UPDATE = 'INPUT_UPDATE',      // Client sends input to host
   STATE_SYNC = 'STATE_SYNC',          // Host sends authoritative state to client
 
+  // Late join
+  LATE_JOIN_STATE = 'LATE_JOIN_STATE', // Host sends full state to late joiner
+
   // Gameplay - Events
   FOOD_COLLECTED = 'FOOD_COLLECTED',
   NPC_KILLED = 'NPC_KILLED',
@@ -150,6 +153,29 @@ export interface RoundEndMessage extends BaseMessage {
 }
 
 /**
+ * Late-join state message — host sends full game state to a player
+ * who joins mid-round so they start with correct world/timer/roles.
+ */
+export interface LateJoinStateMessage extends BaseMessage {
+  type: MessageType.LATE_JOIN_STATE;
+  roundNumber: number;
+  roundStartTime: number;  // host's actual Date.now() when round started
+  roundDuration: number;
+  roles: { [peerId: string]: PlayerRole };
+  playerStates: {
+    [peerId: string]: {
+      position: { x: number; y: number; z: number };
+      rotation: { x: number; y: number; z: number };
+      velocity: { x: number; y: number; z: number };
+      role: PlayerRole;
+      weight?: number;
+      energy?: number;
+      isEating?: boolean;
+    };
+  };
+}
+
+/**
  * Round start event
  */
 export interface RoundStartMessage extends BaseMessage {
@@ -179,6 +205,7 @@ export type NetworkMessage =
   | GameStartMessage
   | InputUpdateMessage
   | StateSyncMessage
+  | LateJoinStateMessage
   | FoodCollectedMessage
   | NPCKilledMessage
   | PlayerDeathMessage

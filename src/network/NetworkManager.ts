@@ -6,6 +6,7 @@ import {
   MessageType,
   InputUpdateMessage,
   StateSyncMessage,
+  LateJoinStateMessage,
   FoodCollectedMessage,
   NPCKilledMessage,
   PlayerDeathMessage,
@@ -65,6 +66,7 @@ export class NetworkManager {
   private onFoodCollectedCallback: ((message: FoodCollectedMessage) => void) | null = null;
   private onNPCKilledCallback: ((message: NPCKilledMessage) => void) | null = null;
   private onRoundEndCallback: ((message: RoundEndMessage) => void) | null = null;
+  private onLateJoinStateCallback: ((message: LateJoinStateMessage) => void) | null = null;
 
   constructor(peerConnection: PeerConnection, gameState: GameState) {
     this.peerConnection = peerConnection;
@@ -120,6 +122,10 @@ export class NetworkManager {
 
       case MessageType.STATE_SYNC:
         this.handleStateSync(message as StateSyncMessage);
+        break;
+
+      case MessageType.LATE_JOIN_STATE:
+        this.handleLateJoinState(message as LateJoinStateMessage);
         break;
 
       case MessageType.FOOD_COLLECTED:
@@ -609,6 +615,16 @@ export class NetworkManager {
   }
 
   /**
+   * Handle late-join state message (client only)
+   */
+  private handleLateJoinState(message: LateJoinStateMessage): void {
+    if (this.gameState.isHost) return;
+    if (this.onLateJoinStateCallback) {
+      this.onLateJoinStateCallback(message);
+    }
+  }
+
+  /**
    * Handle round end message (timer expired)
    */
   private handleRoundEnd(message: RoundEndMessage): void {
@@ -743,6 +759,85 @@ export class NetworkManager {
    */
   public onRoundEnd(callback: (message: RoundEndMessage) => void): void {
     this.onRoundEndCallback = callback;
+  }
+
+  /**
+   * Register callback for late-join state
+   */
+  public onLateJoinState(callback: (message: LateJoinStateMessage) => void): void {
+    this.onLateJoinStateCallback = callback;
+  }
+
+  /**
+   * Send late-join state to a specific peer (host only).
+   * Includes round timer, roles, and all player states so the joiner
+   * starts with the correct world.
+   */
+  public sendLateJoinState(
+    targetPeerId: string,
+    roundNumber: number,
+    roundStartTime: number,
+    roundDuration: number,
+    roles: { [peerId: string]: PlayerRole },
+    playerStates: LateJoinStateMessage['playerStates']
+  ): void {
+    if (!this.gameState.isHost) return;
+
+    const message = createMessage<LateJoinStateMessage>(MessageType.LATE_JOIN_STATE, {
+      roundNumber,
+      roundStartTime,
+      roundDuration,
+      roles,
+      playerStates,
+    });
+
+    this.peerConnection.send(message, targetPeerId);
+  }
+
+  /**
+   * Force an immediate full state sync including food and NPC data.
+   * Used to ensure late joiners get world state right away instead of
+   * waiting for the next worldSyncIntervalMs tick.
+   */
+  public sendImmediateFullSync(): void {
+    if (!this.gameState.isHost) return;
+
+    const players: StateSyncMessage['players'] = {};
+    this.gameState.players.forEach((player, peerId) => {
+      players[peerId] = {
+        position: { x: player.position.x, y: player.position.y, z: player.position.z },
+        rotation: { x: player.rotation.x, y: player.rotation.y, z: player.rotation.z },
+        velocity: { x: player.velocity.x, y: player.velocity.y, z: player.velocity.z },
+        role: player.role,
+        weight: player.weight,
+        energy: player.energy,
+        isEating: player.isEating,
+      };
+    });
+
+    const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = {
+      players,
+      foods: Array.from(this.gameState.foods.values()).map((food) => ({
+        id: food.id,
+        type: food.type,
+        position: { x: food.position.x, y: food.position.y, z: food.position.z },
+        exists: food.exists,
+        respawnTimer: food.respawnTimer ?? 0,
+      })),
+      npcs: Array.from(this.gameState.npcs.values()).map((npc) => ({
+        id: npc.id,
+        type: npc.type,
+        position: { x: npc.position.x, y: npc.position.y, z: npc.position.z },
+        rotation: npc.rotation,
+        state: npc.state,
+        exists: npc.exists,
+      })),
+    };
+
+    const message = createMessage<StateSyncMessage>(MessageType.STATE_SYNC, payload);
+    this.peerConnection.send(message);
+    this.lastSyncTime = Date.now();
+    this.lastWorldSyncTime = Date.now();
   }
 
   /**

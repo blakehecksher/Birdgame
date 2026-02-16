@@ -176,6 +176,13 @@ export class GameState {
   }
 
   /**
+   * Set round start time from host (for late-join timer sync).
+   */
+  public setRoundStartTime(hostRoundStartTime: number): void {
+    this.roundStartTime = hostRoundStartTime;
+  }
+
+  /**
    * Get elapsed round time in seconds
    */
   public getRoundTime(): number {

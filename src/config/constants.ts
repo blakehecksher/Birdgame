@@ -64,6 +64,10 @@ export const GAME_CONFIG = {
   CAMERA_ZOOM_MAX: 12.0,
   CAMERA_ZOOM_SPEED: 1.5,
 
+  // Physics
+  PHYSICS_TIMESTEP: 1 / 60, // Fixed physics step in seconds (60Hz)
+  MAX_PHYSICS_STEPS_PER_FRAME: 4, // Prevent spiral of death on slow devices
+
   // Network settings
   TICK_RATE: 30, // Movement updates per second
   STATE_BUFFER_TIME: 70, // Interpolation delay in milliseconds (Phase 1: reduced from 120ms)
