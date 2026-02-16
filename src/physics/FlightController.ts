@@ -97,19 +97,26 @@ export class FlightController {
     player.rotation.y -= bankYawRate * deltaTime;
 
     // === PITCH ===
-    player.rotation.x -= input.mouseY * pitchSensitivity;
-    if (
-      input.mobilePitchAutoCenter &&
-      Math.abs(input.mouseY) <= GAME_CONFIG.TOUCH_PITCH_CENTER_INPUT_THRESHOLD
-    ) {
-      player.rotation.x = THREE.MathUtils.damp(
-        player.rotation.x,
-        0,
-        GAME_CONFIG.TOUCH_PITCH_CENTER_RATE,
-        deltaTime
-      );
-      if (Math.abs(player.rotation.x) <= GAME_CONFIG.TOUCH_PITCH_CENTER_SNAP) {
-        player.rotation.x = 0;
+    if (input.mobilePitchAutoCenter && typeof input.mobilePitchAxis === 'number') {
+      // Touch stick controls pitch as an axis (target attitude), not mouse-like deltas.
+      // This keeps mobile reticle/motion aligned with stick deflection.
+      const clampedPitchAxis = THREE.MathUtils.clamp(input.mobilePitchAxis, -1, 1);
+      player.rotation.x = -clampedPitchAxis * maxPitch;
+    } else {
+      player.rotation.x -= input.mouseY * pitchSensitivity;
+      if (
+        input.mobilePitchAutoCenter &&
+        Math.abs(input.mouseY) <= GAME_CONFIG.TOUCH_PITCH_CENTER_INPUT_THRESHOLD
+      ) {
+        player.rotation.x = THREE.MathUtils.damp(
+          player.rotation.x,
+          0,
+          GAME_CONFIG.TOUCH_PITCH_CENTER_RATE,
+          deltaTime
+        );
+        if (Math.abs(player.rotation.x) <= GAME_CONFIG.TOUCH_PITCH_CENTER_SNAP) {
+          player.rotation.x = 0;
+        }
       }
     }
     player.rotation.x = Math.max(

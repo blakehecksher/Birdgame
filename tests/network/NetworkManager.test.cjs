@@ -105,6 +105,52 @@ test('host caches input per peer and consumes mouse deltas independently', () =>
   });
 });
 
+test('host treats mobile pitch axis as persistent stick input (not mouse delta bursts)', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-mobile', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.INPUT_UPDATE, {
+      input: {
+        forward: 1,
+        strafe: -0.3,
+        ascend: 0,
+        mouseX: 2,
+        mouseY: 9, // should be ignored when pitchAxis is present
+        pitchAutoCenter: true,
+        pitchAxis: 0.8,
+      },
+    }),
+    'peer-mobile'
+  );
+
+  assert.deepEqual(networkManager.getRemoteInput('peer-mobile'), {
+    forward: 1,
+    strafe: -0.3,
+    ascend: 0,
+    mouseX: 2,
+    mouseY: 0,
+    scrollDelta: 0,
+    mobilePitchAutoCenter: true,
+    mobilePitchAxis: 0.8,
+  });
+
+  assert.deepEqual(networkManager.getRemoteInput('peer-mobile'), {
+    forward: 1,
+    strafe: -0.3,
+    ascend: 0,
+    mouseX: 0,
+    mouseY: 0,
+    scrollDelta: 0,
+    mobilePitchAutoCenter: true,
+    mobilePitchAxis: 0.8,
+  });
+});
+
 test('host state sync includes all known players and respects tick interval', () => {
   const gameState = new GameState(true, 'host');
   gameState.addPlayer('host', PlayerRole.PIGEON);

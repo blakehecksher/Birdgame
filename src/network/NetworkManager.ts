@@ -15,6 +15,7 @@ import {
 } from './messages';
 import { InputState } from '../core/InputManager';
 import { GAME_CONFIG, PlayerRole } from '../config/constants';
+import { DeviceDetector } from '../utils/DeviceDetector';
 
 /**
  * Manages network synchronization between peers
@@ -68,10 +69,40 @@ export class NetworkManager {
   constructor(peerConnection: PeerConnection, gameState: GameState) {
     this.peerConnection = peerConnection;
     this.gameState = gameState;
-    this.tickRate = 1000 / GAME_CONFIG.TICK_RATE; // Convert Hz to ms
+
+    // Phase 2: Adaptive tick rate based on device capabilities
+    // Use DeviceDetector to determine optimal tick rate for this device
+    const recommendedTickRateHz = DeviceDetector.getRecommendedTickRate();
+    this.tickRate = 1000 / recommendedTickRateHz; // Convert Hz to ms
+
+    console.log(
+      `[NetworkManager] Initialized with ${recommendedTickRateHz}Hz tick rate ` +
+      `(${this.tickRate.toFixed(1)}ms interval) for ${DeviceDetector.getDeviceTypeString()} device`
+    );
 
     // Register message handler
     this.peerConnection.onMessage((message, peerId) => this.handleMessage(message, peerId));
+  }
+
+  /**
+   * Set the network tick rate dynamically
+   * Used for FPS-based quality degradation on struggling hosts
+   *
+   * @param tickRateHz - New tick rate in Hz (e.g., 20, 30, 45)
+   */
+  public setTickRate(tickRateHz: number): void {
+    const oldTickRateHz = Math.round(1000 / this.tickRate);
+    this.tickRate = 1000 / tickRateHz;
+    console.log(`[NetworkManager] Tick rate changed: ${oldTickRateHz}Hz → ${tickRateHz}Hz`);
+  }
+
+  /**
+   * Get the current tick rate in Hz
+   *
+   * @returns Current tick rate in Hz
+   */
+  public getTickRateHz(): number {
+    return Math.round(1000 / this.tickRate);
   }
 
   /**
@@ -133,8 +164,15 @@ export class NetworkManager {
     existing.axes.strafe = message.input.strafe;
     existing.axes.ascend = message.input.ascend;
     existing.axes.mobilePitchAutoCenter = message.input.pitchAutoCenter === true;
+    if (typeof message.input.pitchAxis === 'number') {
+      existing.axes.mobilePitchAxis = THREE.MathUtils.clamp(message.input.pitchAxis, -1, 1);
+    } else {
+      existing.axes.mobilePitchAxis = undefined;
+    }
     existing.pendingMouseX += message.input.mouseX;
-    existing.pendingMouseY += message.input.mouseY;
+    if (!(existing.axes.mobilePitchAutoCenter && typeof existing.axes.mobilePitchAxis === 'number')) {
+      existing.pendingMouseY += message.input.mouseY;
+    }
     existing.hasInput = true;
     this.remoteInputs.set(peerId, existing);
   }
@@ -267,8 +305,15 @@ export class NetworkManager {
     this.pendingLocalInputAxes.forward = input.forward;
     this.pendingLocalInputAxes.strafe = input.strafe;
     this.pendingLocalInputAxes.ascend = input.ascend;
+    this.pendingLocalInputAxes.mobilePitchAutoCenter = input.mobilePitchAutoCenter;
+    this.pendingLocalInputAxes.mobilePitchAxis = input.mobilePitchAxis;
     this.pendingLocalMouseX += input.mouseX;
-    this.pendingLocalMouseY += input.mouseY;
+    const useMobilePitchAxis = input.mobilePitchAutoCenter && typeof input.mobilePitchAxis === 'number';
+    if (useMobilePitchAxis) {
+      this.pendingLocalMouseY = 0;
+    } else {
+      this.pendingLocalMouseY += input.mouseY;
+    }
 
     const now = Date.now();
     if (now - this.lastInputTime < this.tickRate) return;
@@ -280,8 +325,14 @@ export class NetworkManager {
       mouseX: this.pendingLocalMouseX,
       mouseY: this.pendingLocalMouseY,
     };
-    if (input.mobilePitchAutoCenter) {
+    const sendMobilePitchAxis = this.pendingLocalInputAxes.mobilePitchAutoCenter &&
+      typeof this.pendingLocalInputAxes.mobilePitchAxis === 'number';
+    if (this.pendingLocalInputAxes.mobilePitchAutoCenter) {
       outboundInput.pitchAutoCenter = true;
+    }
+    if (sendMobilePitchAxis) {
+      outboundInput.pitchAxis = this.pendingLocalInputAxes.mobilePitchAxis;
+      outboundInput.mouseY = 0;
     }
 
     const message = createMessage<InputUpdateMessage>(MessageType.INPUT_UPDATE, {
@@ -365,6 +416,10 @@ export class NetworkManager {
     if (entry.axes.mobilePitchAutoCenter) {
       input.mobilePitchAutoCenter = true;
     }
+    if (entry.axes.mobilePitchAutoCenter && typeof entry.axes.mobilePitchAxis === 'number') {
+      input.mobilePitchAxis = entry.axes.mobilePitchAxis;
+      input.mouseY = 0;
+    }
 
     entry.pendingMouseX = 0;
     entry.pendingMouseY = 0;
@@ -383,6 +438,8 @@ export class NetworkManager {
     this.pendingLocalInputAxes.ascend = 0;
     this.pendingLocalInputAxes.mouseX = 0;
     this.pendingLocalInputAxes.mouseY = 0;
+    this.pendingLocalInputAxes.mobilePitchAutoCenter = false;
+    this.pendingLocalInputAxes.mobilePitchAxis = undefined;
     this.pendingLocalMouseX = 0;
     this.pendingLocalMouseY = 0;
   }
