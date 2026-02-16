@@ -583,30 +583,52 @@
       }
 
       @media (max-width: 640px) {
+        body {
+          background:
+            radial-gradient(circle at 16% 10%, rgba(84, 182, 235, 0.32), transparent 46%),
+            radial-gradient(circle at 85% 92%, rgba(255, 176, 87, 0.24), transparent 36%),
+            linear-gradient(180deg, #10233a 0%, #0a1728 64%, #060d16 100%);
+        }
+
         #lobby {
-          width: 95vw;
-          height: min(94vh, 760px);
-          max-height: 94vh;
+          width: min(96vw, 520px);
+          height: min(96vh, 760px);
+          max-height: 96vh;
+          top: 50%;
+          border-radius: 20px;
+          border-color: rgba(166, 215, 243, 0.42);
+          box-shadow:
+            0 18px 42px rgba(0, 0, 0, 0.48),
+            0 0 0 1px rgba(190, 232, 255, 0.16) inset,
+            0 0 28px rgba(56, 155, 210, 0.18);
         }
 
         #lobby-hero {
           background-position: center 18%;
         }
 
+        #lobby-content {
+          grid-template-rows: minmax(0, 4.2fr) minmax(0, 3.8fr);
+        }
+
         #lobby h1 {
-          margin-top: 0.8rem;
-          font-size: 2.2rem;
+          margin-top: 0.75rem;
+          font-size: clamp(1.85rem, 7.2vw, 2.35rem);
+          letter-spacing: 0.4px;
+          text-shadow: 0 4px 16px rgba(0, 0, 0, 0.84);
         }
 
         #lobby-content .subtitle {
-          font-size: 1rem;
+          font-size: 0.95rem;
+          letter-spacing: 1.05px;
         }
 
         #lobby-band {
           margin-top: 0;
           min-height: 0;
-          padding: 0rem 0.7rem 0rem 0.7rem;
+          padding: 0.1rem 0.75rem max(0.5rem, env(safe-area-inset-bottom, 0px));
           overflow-y: auto;
+          background: linear-gradient(180deg, rgba(5, 15, 26, 0.7), rgba(4, 10, 18, 0.98));
         }
 
         #lobby-bottom-layout {
@@ -615,15 +637,110 @@
             "subtitle"
             "play"
             "leaderboard";
-          row-gap: 10px;
+          row-gap: 11px;
         }
 
         #play-panel {
           align-items: center;
+          border-radius: 14px;
+          padding: 14px 12px 16px;
         }
 
         .leaderboard-grid {
           grid-template-columns: 1fr;
+        }
+
+        #lobby button {
+          min-height: 46px;
+          border-radius: 11px;
+          font-size: 14px;
+          letter-spacing: 0.6px;
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        #host-btn,
+        #join-btn {
+          width: 100%;
+          min-width: 0;
+          max-width: 260px;
+        }
+
+        .action-row {
+          gap: 10px;
+        }
+
+        #username-row,
+        .username-row {
+          gap: 6px;
+          margin-bottom: 10px;
+        }
+
+        #username-input,
+        #join-username-input,
+        #peer-id-input {
+          min-height: 42px;
+          border-radius: 10px;
+          font-size: 14px !important;
+        }
+
+        #leaderboard-panel {
+          border-radius: 14px;
+          padding: 12px 10px 14px;
+        }
+
+        .leaderboard-list {
+          min-height: 74px;
+          max-height: 86px;
+        }
+
+        #room-code {
+          font-size: clamp(1.35rem, 8vw, 1.8rem);
+          letter-spacing: 3px;
+        }
+
+        .room-code-row {
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+      }
+
+      @media (max-width: 420px) {
+        #lobby {
+          width: 97vw;
+          height: min(97vh, 760px);
+          border-radius: 16px;
+        }
+
+        #lobby-content {
+          grid-template-rows: minmax(0, 3.9fr) minmax(0, 4.1fr);
+        }
+
+        #lobby h1 {
+          margin-top: 0.55rem;
+        }
+
+        #lobby-band {
+          padding-left: 0.6rem;
+          padding-right: 0.6rem;
+        }
+
+        #lobby-content .subtitle {
+          font-size: 0.88rem;
+        }
+
+        #lobby button {
+          min-height: 44px;
+          font-size: 13px;
+        }
+
+        .leaderboard-list li {
+          font-size: 10.5px;
+          gap: 5px;
+          margin-right: 6px;
+        }
+
+        .best-line {
+          font-size: 11px;
         }
       }
 
@@ -1360,7 +1477,7 @@
         #event-feed { bottom: 220px; }
       }
     </style>
-    <script type="module" crossorigin src="/Birdgame/assets/index-DJDzc8B2.js"></script>
+    <script type="module" crossorigin src="/Birdgame/assets/index-D9bVXled.js"></script>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
