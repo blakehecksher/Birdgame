@@ -1,12 +1,19 @@
 import Peer, { DataConnection } from 'peerjs';
-import { NetworkMessage } from './messages';
+import { MessageType, NetworkMessage } from './messages';
+
+type ChannelType = 'realtime' | 'event';
+type PeerChannels = {
+  realtime: DataConnection | null;
+  event: DataConnection | null;
+};
 
 /**
  * Wrapper for PeerJS to simplify WebRTC connection
  */
 export class PeerConnection {
   private peer: Peer | null = null;
-  private connections: Map<string, DataConnection> = new Map();
+  private connections: Map<string, PeerChannels> = new Map();
+  private connectedPeers: Set<string> = new Set();
   private isHost: boolean = false;
   private storedHostPeerId: string | null = null;
   private onMessageCallback: ((message: NetworkMessage, peerId: string) => void) | null = null;
@@ -21,6 +28,8 @@ export class PeerConnection {
   private keepAliveInterval: number | null = null;
   private pageHiddenTime: number = 0;
   private readonly MAX_BACKGROUND_TIME = 30000; // 30 seconds max background time
+  private readonly REALTIME_CHANNEL_LABEL = 'realtime';
+  private readonly EVENT_CHANNEL_LABEL = 'event';
 
   public async initializeAsHost(roomCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -37,21 +46,9 @@ export class PeerConnection {
         });
 
         this.peer.on('connection', (conn) => {
-          console.log('Client connected:', conn.peer);
-          this.connections.set(conn.peer, conn);
-          this.setupConnectionHandlers(conn);
-
-          if (this.isReconnecting) {
-            this.isReconnecting = false;
-            this.reconnectAttempts = 0;
-            if (this.onReconnectedCallback) {
-              this.onReconnectedCallback();
-            }
-          }
-
-          if (this.onConnectedCallback) {
-            this.onConnectedCallback(conn.peer);
-          }
+          const channelType = this.resolveChannelType(conn);
+          console.log(`Client connected on ${channelType} channel:`, conn.peer);
+          this.setupConnectionHandlers(conn, channelType);
         });
 
         this.peer.on('error', (error) => {
@@ -73,10 +70,7 @@ export class PeerConnection {
 
         this.peer.on('open', (id) => {
           console.log('Client peer ID:', id);
-
-          const connection = this.peer!.connect(hostPeerId, { reliable: true });
-          this.connections.set(hostPeerId, connection);
-          this.setupConnectionHandlers(connection);
+          this.connectToHost();
           resolve(id);
         });
 
@@ -90,13 +84,54 @@ export class PeerConnection {
     });
   }
 
-  private setupConnectionHandlers(connection: DataConnection): void {
+  private getOrCreatePeerChannels(peerId: string): PeerChannels {
+    const existing = this.connections.get(peerId);
+    if (existing) return existing;
+
+    const channels: PeerChannels = {
+      realtime: null,
+      event: null,
+    };
+    this.connections.set(peerId, channels);
+    return channels;
+  }
+
+  private resolveChannelType(connection: DataConnection): ChannelType {
+    const metadataChannel = (connection.metadata as { channel?: string } | null | undefined)?.channel;
+    if (metadataChannel === this.REALTIME_CHANNEL_LABEL) return 'realtime';
+    if (metadataChannel === this.EVENT_CHANNEL_LABEL) return 'event';
+
+    const label = (connection.label ?? '').toLowerCase();
+    if (label === this.REALTIME_CHANNEL_LABEL) return 'realtime';
+    if (label === this.EVENT_CHANNEL_LABEL) return 'event';
+
+    const reliable = (connection as DataConnection & { reliable?: boolean }).reliable;
+    if (reliable === false) return 'realtime';
+    return 'event';
+  }
+
+  private setupConnectionHandlers(connection: DataConnection, explicitChannelType?: ChannelType): void {
+    const channelType = explicitChannelType ?? this.resolveChannelType(connection);
+    const channels = this.getOrCreatePeerChannels(connection.peer);
+    channels[channelType] = connection;
+    this.connections.set(connection.peer, channels);
+
     connection.on('open', () => {
-      console.log('Connection opened:', connection.peer);
+      console.log(`Connection opened (${channelType}):`, connection.peer);
+
+      if (channelType !== 'realtime') return;
+
+      const wasConnected = this.connectedPeers.has(connection.peer);
+      this.connectedPeers.add(connection.peer);
       this.reconnectAttempts = 0;
+      const wasReconnecting = this.isReconnecting;
       this.isReconnecting = false;
 
-      if (!this.isHost && this.onConnectedCallback) {
+      if (wasReconnecting && this.onReconnectedCallback) {
+        this.onReconnectedCallback();
+      }
+
+      if (!wasConnected && this.onConnectedCallback) {
         this.onConnectedCallback(connection.peer);
       }
     });
@@ -108,25 +143,66 @@ export class PeerConnection {
     });
 
     connection.on('close', () => {
-      console.log('Connection closed:', connection.peer);
-      this.connections.delete(connection.peer);
-      this.attemptReconnect(connection.peer);
+      console.log(`Connection closed (${channelType}):`, connection.peer);
+      this.handleConnectionClosed(connection.peer, channelType, connection);
     });
 
     connection.on('error', (error) => {
-      console.error('Connection error:', error);
+      console.error(`Connection error (${channelType}):`, error);
     });
+  }
+
+  private handleConnectionClosed(peerId: string, channelType: ChannelType, connection: DataConnection): void {
+    const channels = this.connections.get(peerId);
+    if (channels && channels[channelType] === connection) {
+      channels[channelType] = null;
+      if (!channels.realtime && !channels.event) {
+        this.connections.delete(peerId);
+      } else {
+        this.connections.set(peerId, channels);
+      }
+    }
+
+    if (channelType === 'realtime') {
+      const wasConnected = this.connectedPeers.delete(peerId);
+
+      // Close reliable channel too; reconnect will recreate both channels.
+      if (channels?.event?.open) {
+        try {
+          channels.event.close();
+        } catch (error) {
+          console.warn('Failed closing event channel during realtime disconnect:', error);
+        }
+      }
+
+      if (this.isHost) {
+        if (wasConnected) {
+          console.log('Client disconnected. Waiting for reconnection...');
+          this.isReconnecting = true;
+          if (this.onDisconnectedCallback) {
+            this.onDisconnectedCallback(peerId);
+          }
+        }
+        return;
+      }
+
+      this.attemptReconnect(peerId);
+      return;
+    }
+
+    // Restore reliable channel in the background while realtime play continues.
+    if (!this.isHost && this.connectedPeers.has(peerId) && !this.isReconnecting) {
+      this.openChannel(peerId, 'event');
+    }
   }
 
   private attemptReconnect(peerId?: string): void {
     if (this.isHost) {
-      console.log('Client disconnected. Waiting for reconnection...');
-      this.isReconnecting = true;
-      if (this.onDisconnectedCallback) {
-        this.onDisconnectedCallback(peerId);
-      }
+      // Hosts wait for clients to reconnect.
       return;
     }
+
+    if (this.isReconnecting) return;
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.log('Max reconnect attempts reached');
@@ -140,6 +216,7 @@ export class PeerConnection {
     this.isReconnecting = true;
     this.reconnectAttempts++;
     console.log(`Reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
+    this.closeAllChannels();
 
     setTimeout(() => {
       if (!this.peer || this.peer.destroyed) {
@@ -151,60 +228,89 @@ export class PeerConnection {
         });
       } else if (this.peer.disconnected) {
         this.peer.reconnect();
-        this.peer.on('open', () => this.connectToHost());
       } else {
         this.connectToHost();
       }
     }, 2000);
   }
 
+  private openChannel(targetPeerId: string, channelType: ChannelType): void {
+    if (!this.peer) return;
+
+    const connection = this.peer.connect(targetPeerId, channelType === 'realtime'
+      ? {
+        reliable: false,
+        label: this.REALTIME_CHANNEL_LABEL,
+        metadata: { channel: this.REALTIME_CHANNEL_LABEL },
+      }
+      : {
+        reliable: true,
+        label: this.EVENT_CHANNEL_LABEL,
+        metadata: { channel: this.EVENT_CHANNEL_LABEL },
+      });
+
+    this.setupConnectionHandlers(connection, channelType);
+  }
+
   private connectToHost(): void {
     if (!this.peer || !this.storedHostPeerId) return;
 
-    const connection = this.peer.connect(this.storedHostPeerId, {
-      reliable: true,
-    });
+    const channels = this.getOrCreatePeerChannels(this.storedHostPeerId);
 
-    this.connections.set(this.storedHostPeerId, connection);
+    if (!channels.realtime) {
+      this.openChannel(this.storedHostPeerId, 'realtime');
+    }
 
-    connection.on('open', () => {
-      console.log('Reconnected to host');
-      this.reconnectAttempts = 0;
-      this.isReconnecting = false;
-      if (this.onReconnectedCallback) {
-        this.onReconnectedCallback();
-      }
-    });
+    if (!channels.event) {
+      this.openChannel(this.storedHostPeerId, 'event');
+    }
+  }
 
-    connection.on('data', (data) => {
-      if (this.onMessageCallback) {
-        this.onMessageCallback(data as NetworkMessage, connection.peer);
-      }
-    });
+  private getPreferredChannel(message: NetworkMessage): ChannelType {
+    switch (message.type) {
+      case MessageType.INPUT_UPDATE:
+      case MessageType.STATE_SYNC:
+      case MessageType.PING:
+        return 'realtime';
+      default:
+        return 'event';
+    }
+  }
 
-    connection.on('close', () => {
-      console.log('Reconnected connection closed');
-      this.connections.delete(connection.peer);
-      this.attemptReconnect(connection.peer);
-    });
+  private getBestOpenConnection(channels: PeerChannels, preferred: ChannelType): DataConnection | null {
+    const preferredConnection = channels[preferred];
+    if (preferredConnection?.open) {
+      return preferredConnection;
+    }
 
-    connection.on('error', (error) => {
-      console.error('Reconnect connection error:', error);
-      this.attemptReconnect(connection.peer);
-    });
+    const fallback = preferred === 'realtime' ? channels.event : channels.realtime;
+    if (fallback?.open) {
+      return fallback;
+    }
+
+    return null;
+  }
+
+  private sendToPeer(peerId: string, message: NetworkMessage, preferred: ChannelType): void {
+    const channels = this.connections.get(peerId);
+    if (!channels) return;
+
+    const connection = this.getBestOpenConnection(channels, preferred);
+    if (!connection) return;
+
+    connection.send(message);
   }
 
   public send(message: NetworkMessage, peerId?: string): void {
+    const preferredChannel = this.getPreferredChannel(message);
+
     if (peerId) {
-      const conn = this.connections.get(peerId);
-      if (conn?.open) conn.send(message);
+      this.sendToPeer(peerId, message, preferredChannel);
       return;
     }
 
-    this.connections.forEach((conn) => {
-      if (conn.open) {
-        conn.send(message);
-      }
+    this.connections.forEach((_channels, remotePeerId) => {
+      this.sendToPeer(remotePeerId, message, preferredChannel);
     });
   }
 
@@ -225,10 +331,7 @@ export class PeerConnection {
   }
 
   public isConnected(): boolean {
-    for (const conn of this.connections.values()) {
-      if (conn.open) return true;
-    }
-    return false;
+    return this.connectedPeers.size > 0;
   }
 
   public getIsReconnecting(): boolean {
@@ -240,14 +343,14 @@ export class PeerConnection {
   }
 
   public getRemotePeerId(): string | null {
-    for (const [peerId, conn] of this.connections.entries()) {
-      if (conn.open) return peerId;
+    for (const peerId of this.connectedPeers.values()) {
+      return peerId;
     }
     return null;
   }
 
   public getRemotePeerIds(): string[] {
-    return Array.from(this.connections.keys());
+    return Array.from(this.connectedPeers.values());
   }
 
   public isHostPeer(): boolean {
@@ -262,16 +365,48 @@ export class PeerConnection {
 
     this.keepAliveInterval = window.setInterval(() => {
       // Send tiny ping message to all connections to keep them alive
-      this.connections.forEach((conn) => {
-        if (conn.open) {
-          try {
-            conn.send({ type: 'PING', timestamp: Date.now() });
-          } catch (e) {
-            console.warn('Keep-alive ping failed:', e);
-          }
-        }
-      });
+      const pingMessage: NetworkMessage = {
+        type: MessageType.PING,
+        timestamp: Date.now(),
+      };
+      try {
+        this.send(pingMessage);
+      } catch (e) {
+        console.warn('Keep-alive ping failed:', e);
+      }
     }, 10000); // Every 10 seconds
+  }
+
+  private closePeerChannels(peerId: string): void {
+    const channels = this.connections.get(peerId);
+    if (!channels) return;
+
+    if (channels.realtime) {
+      try {
+        channels.realtime.close();
+      } catch (error) {
+        console.warn('Failed to close realtime channel:', error);
+      }
+    }
+
+    if (channels.event) {
+      try {
+        channels.event.close();
+      } catch (error) {
+        console.warn('Failed to close event channel:', error);
+      }
+    }
+
+    this.connections.delete(peerId);
+    this.connectedPeers.delete(peerId);
+  }
+
+  private closeAllChannels(): void {
+    for (const peerId of Array.from(this.connections.keys())) {
+      this.closePeerChannels(peerId);
+    }
+    this.connections.clear();
+    this.connectedPeers.clear();
   }
 
   /**
@@ -352,8 +487,7 @@ export class PeerConnection {
 
     this.isReconnecting = false;
     this.reconnectAttempts = this.maxReconnectAttempts;
-    this.connections.forEach((connection) => connection.close());
-    this.connections.clear();
+    this.closeAllChannels();
     if (this.peer) {
       this.peer.destroy();
       this.peer = null;

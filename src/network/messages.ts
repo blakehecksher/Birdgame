@@ -71,6 +71,7 @@ export interface GameStartMessage extends BaseMessage {
  */
 export interface InputUpdateMessage extends BaseMessage {
   type: MessageType.INPUT_UPDATE;
+  sequence?: number;
   input: {
     forward: number;
     strafe: number;
@@ -87,6 +88,7 @@ export interface InputUpdateMessage extends BaseMessage {
  */
 export interface StateSyncMessage extends BaseMessage {
   type: MessageType.STATE_SYNC;
+  sequence?: number;
   roundNumber?: number;
   roundStartTime?: number;
   roundDuration?: number;

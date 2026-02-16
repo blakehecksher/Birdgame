@@ -31,7 +31,7 @@ export class NetworkManager {
   private worldSyncIntervalMs: number = 100;
 
   // State buffer for interpolation (client only)
-  private stateBuffer: StateSyncMessage[] = [];
+  private stateBuffer: Array<StateSyncMessage & { receivedAt: number }> = [];
 
   // Host-side remote input cache per peer.
   // Axes are treated as persistent state; mouse deltas are consumed once.
@@ -40,6 +40,7 @@ export class NetworkManager {
     axes: InputState;
     pendingMouseX: number;
     pendingMouseY: number;
+    lastSequence: number;
   }> = new Map();
   private pendingLocalInputAxes: InputState = {
     forward: 0,
@@ -51,12 +52,16 @@ export class NetworkManager {
   };
   private pendingLocalMouseX: number = 0;
   private pendingLocalMouseY: number = 0;
+  private localInputSequence: number = 0;
+  private localStateSequence: number = 0;
+  private lastReceivedStateSequence: number = -1;
 
   // Client-side authoritative snapshot for local reconciliation.
   private localAuthoritativeState: {
     position: THREE.Vector3;
     rotation: THREE.Euler;
     velocity: THREE.Vector3;
+    // Local monotonic receipt time (performance.now domain).
     timestamp: number;
   } | null = null;
 
@@ -164,7 +169,16 @@ export class NetworkManager {
       axes: { forward: 0, strafe: 0, ascend: 0, mouseX: 0, mouseY: 0, scrollDelta: 0 },
       pendingMouseX: 0,
       pendingMouseY: 0,
+      lastSequence: -1,
     };
+
+    const incomingSequence = typeof message.sequence === 'number' ? message.sequence : null;
+    if (incomingSequence !== null && incomingSequence <= existing.lastSequence) {
+      return;
+    }
+    if (incomingSequence !== null) {
+      existing.lastSequence = incomingSequence;
+    }
 
     existing.axes.forward = message.input.forward;
     existing.axes.strafe = message.input.strafe;
@@ -189,24 +203,34 @@ export class NetworkManager {
   private handleStateSync(message: StateSyncMessage): void {
     if (this.gameState.isHost) return;
 
-    // Add to buffer for interpolation
-    this.stateBuffer.push(message);
+    const incomingSequence = typeof message.sequence === 'number' ? message.sequence : null;
+    if (incomingSequence !== null && incomingSequence <= this.lastReceivedStateSequence) {
+      return;
+    }
+    if (incomingSequence !== null) {
+      this.lastReceivedStateSequence = incomingSequence;
+    }
 
-    // Keep buffer sorted by timestamp
-    this.stateBuffer.sort((a, b) => a.timestamp - b.timestamp);
+    const receivedAt = performance.now();
+
+    // Add to buffer for interpolation
+    this.stateBuffer.push({
+      ...message,
+      receivedAt,
+    });
 
     // Remove old states (older than 1 second)
-    const cutoff = Date.now() - 1000;
-    this.stateBuffer = this.stateBuffer.filter((s) => s.timestamp > cutoff);
+    const cutoff = receivedAt - 1000;
+    this.stateBuffer = this.stateBuffer.filter((s) => s.receivedAt > cutoff);
 
     // Apply immediate state update (we can add interpolation later if needed)
-    this.applyStateSync(message);
+    this.applyStateSync(message, receivedAt);
   }
 
   /**
    * Apply state sync to game state
    */
-  private applyStateSync(message: StateSyncMessage): void {
+  private applyStateSync(message: StateSyncMessage, receivedAt: number): void {
     this.syncRoundTimingFromHost(message);
 
     // Update players
@@ -253,7 +277,7 @@ export class NetworkManager {
               playerData.velocity.y,
               playerData.velocity.z
             ),
-            timestamp: message.timestamp,
+            timestamp: receivedAt,
           };
         }
 
@@ -384,6 +408,7 @@ export class NetworkManager {
     }
 
     const message = createMessage<InputUpdateMessage>(MessageType.INPUT_UPDATE, {
+      sequence: ++this.localInputSequence,
       input: outboundInput,
     });
 
@@ -418,6 +443,7 @@ export class NetworkManager {
     });
 
     const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = {
+      sequence: ++this.localStateSequence,
       players,
       roundNumber: this.gameState.roundNumber,
       roundStartTime: this.gameState.roundStartTime,
@@ -499,6 +525,7 @@ export class NetworkManager {
     this.pendingLocalInputAxes.mobilePitchAxis = undefined;
     this.pendingLocalMouseX = 0;
     this.pendingLocalMouseY = 0;
+    this.localInputSequence = 0;
   }
 
   /**
@@ -531,7 +558,7 @@ export class NetworkManager {
         const player = snapshot.players[peerId];
         if (!player) return null;
         return {
-          timestamp: snapshot.timestamp,
+          timestamp: snapshot.receivedAt,
           position: player.position,
           rotation: player.rotation,
           velocity: player.velocity,
@@ -550,7 +577,7 @@ export class NetworkManager {
 
     if (snapshots.length === 0) return null;
 
-    const renderTimestamp = Date.now() - GAME_CONFIG.STATE_BUFFER_TIME;
+    const renderTimestamp = performance.now() - GAME_CONFIG.STATE_BUFFER_TIME;
 
     // If render time is before our buffer, snap to earliest known snapshot.
     if (renderTimestamp <= snapshots[0].timestamp) {
@@ -870,6 +897,7 @@ export class NetworkManager {
 
     const now = Date.now();
     const payload: Omit<StateSyncMessage, 'type' | 'timestamp'> = {
+      sequence: ++this.localStateSequence,
       players,
       roundNumber: this.gameState.roundNumber,
       roundStartTime: this.gameState.roundStartTime,

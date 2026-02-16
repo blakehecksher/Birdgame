@@ -2024,7 +2024,7 @@ export class Game {
     if (!authoritative) return;
 
     // Ignore stale snapshots.
-    if (Date.now() - authoritative.timestamp > 300) return;
+    if (performance.now() - authoritative.timestamp > 300) return;
 
     const isMobileClient = this.inputManager.isMobile;
     const hardSnapDistance = GAME_CONFIG.HARD_SNAP_THRESHOLD;

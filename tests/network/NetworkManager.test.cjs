@@ -165,6 +165,8 @@ test('host state sync includes all known players and respects tick interval', ()
 
   const firstMessage = peerConnection.sentMessages[0].message;
   assert.equal(firstMessage.type, MessageType.STATE_SYNC);
+  assert.equal(typeof firstMessage.sequence, 'number');
+  assert.ok(firstMessage.sequence >= 1);
   assert.deepEqual(Object.keys(firstMessage.players).sort(), ['host', 'peer-a', 'peer-b']);
 
   networkManager.sendStateSync();
@@ -200,6 +202,143 @@ test('client state sync creates missing player states and stores local authorita
   assert.equal(authoritative.position.x, 1);
   assert.equal(authoritative.position.y, 2);
   assert.equal(authoritative.position.z, 3);
+});
+
+test('host ignores out-of-order input updates by sequence', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.INPUT_UPDATE, {
+      sequence: 2,
+      input: { forward: 1, strafe: 0.25, ascend: 0, mouseX: 0, mouseY: 0 },
+    }),
+    'peer-a'
+  );
+
+  // Older packet should be ignored.
+  peerConnection.emit(
+    createMessage(MessageType.INPUT_UPDATE, {
+      sequence: 1,
+      input: { forward: 0, strafe: -1, ascend: 0, mouseX: 0, mouseY: 0 },
+    }),
+    'peer-a'
+  );
+
+  assert.deepEqual(networkManager.getRemoteInput('peer-a'), {
+    forward: 1,
+    strafe: 0.25,
+    ascend: 0,
+    mouseX: 0,
+    mouseY: 0,
+    scrollDelta: 0,
+  });
+});
+
+test('client interpolation buffer uses local receipt time, not sender wall clock', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  // Simulate extreme clock skew from sender.
+  peerConnection.emit(
+    {
+      type: MessageType.STATE_SYNC,
+      timestamp: 0,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 1, y: 2, z: 3 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: -4, y: 5, z: 6 }),
+      },
+      foods: [],
+      npcs: [],
+    },
+    'host-1'
+  );
+
+  const interpolated = networkManager.getInterpolatedRemoteState('host-1');
+  assert.ok(interpolated, 'Snapshot should still be buffered despite stale sender timestamp');
+  assert.equal(interpolated.position.x, -4);
+  assert.equal(interpolated.position.y, 5);
+  assert.equal(interpolated.position.z, 6);
+});
+
+test('client authoritative timestamp is local monotonic receipt time', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  const before = performance.now();
+  peerConnection.emit(
+    {
+      type: MessageType.STATE_SYNC,
+      timestamp: 1,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 1, y: 2, z: 3 }),
+      },
+      foods: [],
+      npcs: [],
+    },
+    'host-1'
+  );
+  const after = performance.now();
+
+  const authoritative = networkManager.getLocalAuthoritativeState();
+  assert.ok(authoritative);
+  assert.ok(
+    authoritative.timestamp >= before && authoritative.timestamp <= after + 2,
+    `Expected local monotonic timestamp between ${before} and ${after}, got ${authoritative.timestamp}`
+  );
+});
+
+test('client ignores out-of-order state sync snapshots by sequence', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 2,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 10, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 100, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  // Older packet should be ignored.
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 1,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: -999, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: -999, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  const authoritative = networkManager.getLocalAuthoritativeState();
+  assert.ok(authoritative);
+  assert.equal(authoritative.position.x, 10);
+
+  const interpolated = networkManager.getInterpolatedRemoteState('host-1');
+  assert.ok(interpolated);
+  assert.equal(interpolated.position.x, 100);
 });
 
 test('resetRemoteInput clears host input cache', () => {
