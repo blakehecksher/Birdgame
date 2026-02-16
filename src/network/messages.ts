@@ -6,6 +6,7 @@ import { NPCSnapshot, NPCType } from '../entities/NPC';
  */
 export enum MessageType {
   // Connection
+  PING = 'PING',                      // Keep-alive ping
   PLAYER_JOIN = 'PLAYER_JOIN',
   ROLE_SELECT = 'ROLE_SELECT',
   GAME_START = 'GAME_START',
@@ -28,6 +29,13 @@ export enum MessageType {
 export interface BaseMessage {
   type: MessageType;
   timestamp: number;
+}
+
+/**
+ * Keep-alive ping message
+ */
+export interface PingMessage extends BaseMessage {
+  type: MessageType.PING;
 }
 
 /**
@@ -164,6 +172,7 @@ export interface RoundStartMessage extends BaseMessage {
  * Union type of all messages
  */
 export type NetworkMessage =
+  | PingMessage
   | PlayerJoinMessage
   | RoleSelectMessage
   | GameStartMessage

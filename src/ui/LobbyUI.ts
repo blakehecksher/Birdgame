@@ -39,6 +39,7 @@ export class LobbyUI {
   private personalBestFat: HTMLElement;
   private personalBestKill: HTMLElement;
   private personalBestBadge: HTMLElement;
+  private connectionWarning: HTMLElement | null = null;
 
   private onHostCallback: (() => void) | null = null;
   private onHostCancelCallback: (() => void) | null = null;
@@ -73,6 +74,8 @@ export class LobbyUI {
 
     this.setupEventListeners();
     this.restoreUsername();
+    this.setupConnectionWarning();
+    this.setupMobileWarnings();
   }
 
   private setupEventListeners(): void {
@@ -117,6 +120,12 @@ export class LobbyUI {
     this.peerIdInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
         this.connectBtn.click();
+      }
+    });
+    this.peerIdInput.addEventListener('input', () => {
+      const sanitized = this.peerIdInput.value.replace(/\D/g, '').slice(0, 6);
+      if (this.peerIdInput.value !== sanitized) {
+        this.peerIdInput.value = sanitized;
       }
     });
     // Copy link button
@@ -168,7 +177,12 @@ export class LobbyUI {
   }
 
   private setHostStatus(message: string): void {
-    this.hostStatus.textContent = message;
+    // Allow HTML if message contains tags, otherwise use textContent
+    if (message.includes('<')) {
+      this.hostStatus.innerHTML = message;
+    } else {
+      this.hostStatus.textContent = message;
+    }
   }
 
   private setJoinStatus(message: string): void {
@@ -180,6 +194,68 @@ export class LobbyUI {
     this.connectBtn.disabled = false;
     this.connectBtn.textContent = 'Connect';
     this.setJoinStatus('Input username (optional), then enter room code.');
+  }
+
+  /**
+   * Setup connection warning overlay
+   */
+  private setupConnectionWarning(): void {
+    this.connectionWarning = document.createElement('div');
+    this.connectionWarning.style.cssText = `
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255, 100, 100, 0.95);
+      color: white;
+      padding: 20px;
+      border-radius: 10px;
+      font-size: 16px;
+      text-align: center;
+      z-index: 10000;
+      max-width: 80%;
+    `;
+    document.body.appendChild(this.connectionWarning);
+  }
+
+  /**
+   * Setup mobile visibility warnings
+   */
+  private setupMobileWarnings(): void {
+    let isWarningShown = false;
+
+    document.addEventListener('visibilitychange', () => {
+      // Only show warning if we're in lobby and hosting
+      const isInLobby = this.lobbyElement.style.display !== 'none';
+      const isHosting = !this.hostScreen.classList.contains('hidden');
+
+      if (document.hidden && isInLobby && isHosting && !isWarningShown) {
+        // Don't show warning yet, wait until they come back
+        isWarningShown = true;
+      } else if (!document.hidden && isWarningShown) {
+        // Came back, show brief "connection may be unstable" message
+        this.showConnectionWarning(
+          'Welcome back! If clients can\'t connect, you may need to create a new room.',
+          3000
+        );
+        isWarningShown = false;
+      }
+    });
+  }
+
+  /**
+   * Show connection warning message
+   */
+  private showConnectionWarning(message: string, duration: number): void {
+    if (!this.connectionWarning) return;
+    this.connectionWarning.textContent = message;
+    this.connectionWarning.style.display = 'block';
+    setTimeout(() => {
+      if (this.connectionWarning) {
+        this.connectionWarning.style.display = 'none';
+      }
+    }, duration);
   }
 
   /**
@@ -249,7 +325,19 @@ export class LobbyUI {
 
     // Also set the old peer ID display for fallback
     this.peerIdDisplay.value = roomCode;
-    this.setHostStatus('Waiting for friends to join...');
+
+    // Add mobile-specific tip if on mobile device
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      this.setHostStatus(`
+        <div style="margin-top: 10px; padding: 10px; background: rgba(255, 200, 100, 0.2); border-radius: 5px;">
+          <strong>📱 Mobile Host Tip:</strong><br>
+          Keep this tab open while sharing the code!<br>
+          Switching apps may disconnect the room.
+        </div>
+      `);
+    } else {
+      this.setHostStatus('Waiting for friends to join...');
+    }
   }
 
   /**
@@ -340,13 +428,13 @@ export class LobbyUI {
   }
 
   public renderLeaderboard(
-    fattest: Array<{ username: string; value: number }>,
-    fastest: Array<{ username: string; value: number }>
+    fattest: Array<{ username?: string | null; value: number }>,
+    fastest: Array<{ username?: string | null; value: number }>
   ): void {
     this.leaderboardFat.innerHTML = fattest.length
       ? fattest
           .map((row, idx) => this.renderLeaderboardRow(
-            `${idx + 1}. ${this.escapeHtml(row.username)}`,
+            `${idx + 1}. ${this.escapeHtml(this.normalizeLeaderboardName(row.username))}`,
             `${row.value.toFixed(1)} lbs`
           ))
           .join('')
@@ -355,7 +443,7 @@ export class LobbyUI {
     this.leaderboardKill.innerHTML = fastest.length
       ? fastest
           .map((row, idx) => this.renderLeaderboardRow(
-            `${idx + 1}. ${this.escapeHtml(row.username)}`,
+            `${idx + 1}. ${this.escapeHtml(this.normalizeLeaderboardName(row.username))}`,
             this.formatSeconds(row.value)
           ))
           .join('')
@@ -373,6 +461,12 @@ export class LobbyUI {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  private normalizeLeaderboardName(name: string | null | undefined): string {
+    if (typeof name !== 'string') return 'anon';
+    const trimmed = name.trim();
+    return trimmed.length > 0 ? trimmed : 'anon';
   }
 
   private formatSeconds(totalSeconds: number): string {

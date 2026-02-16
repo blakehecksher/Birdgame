@@ -66,7 +66,14 @@ export const GAME_CONFIG = {
 
   // Network settings
   TICK_RATE: 30, // Movement updates per second
-  STATE_BUFFER_TIME: 120, // Interpolation delay in milliseconds
+  STATE_BUFFER_TIME: 70, // Interpolation delay in milliseconds (Phase 1: reduced from 120ms)
+
+  // Netcode tuning (Phase 1)
+  RECONCILIATION_DEAD_ZONE: 0.3,      // Below this error, no correction (was 0.4, tried 0.15 but too jittery)
+  RECONCILIATION_ALPHA_MAX: 0.35,     // Correction strength (was 0.22)
+  RECONCILIATION_ALPHA_SCALE: 15.0,   // Multiplier for deltaTime (was 10)
+  HARD_SNAP_THRESHOLD: 5.0,           // Instant teleport above this distance
+  EXTRAPOLATION_STALE_THRESHOLD: 200, // Fallback to last position if snapshot > this ms old
 
   // Food settings
   FOOD_RESPAWN_TIME: 30, // Seconds

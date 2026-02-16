@@ -17,6 +17,11 @@ export class PeerConnection {
   private maxReconnectAttempts: number = 3;
   private isReconnecting: boolean = false;
 
+  // Mobile background handling
+  private keepAliveInterval: number | null = null;
+  private pageHiddenTime: number = 0;
+  private readonly MAX_BACKGROUND_TIME = 30000; // 30 seconds max background time
+
   public async initializeAsHost(roomCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
@@ -26,6 +31,8 @@ export class PeerConnection {
 
         this.peer.on('open', (id) => {
           console.log('Host peer ID:', id);
+          this.startKeepAlive();
+          this.setupVisibilityHandlers();
           resolve(id);
         });
 
@@ -247,7 +254,102 @@ export class PeerConnection {
     return this.isHost;
   }
 
+  /**
+   * Send keep-alive pings to maintain connection during brief background
+   */
+  private startKeepAlive(): void {
+    if (this.keepAliveInterval !== null) return;
+
+    this.keepAliveInterval = window.setInterval(() => {
+      // Send tiny ping message to all connections to keep them alive
+      this.connections.forEach((conn) => {
+        if (conn.open) {
+          try {
+            conn.send({ type: 'PING', timestamp: Date.now() });
+          } catch (e) {
+            console.warn('Keep-alive ping failed:', e);
+          }
+        }
+      });
+    }, 10000); // Every 10 seconds
+  }
+
+  /**
+   * Handle page visibility changes (mobile app switching)
+   */
+  private setupVisibilityHandlers(): void {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        // Page going to background
+        this.pageHiddenTime = Date.now();
+        console.log('[Mobile] Page hidden, connection may suspend');
+      } else {
+        // Page coming back to foreground
+        const backgroundDuration = Date.now() - this.pageHiddenTime;
+        console.log(`[Mobile] Page visible again (was hidden ${backgroundDuration}ms)`);
+
+        if (backgroundDuration > this.MAX_BACKGROUND_TIME) {
+          // Was in background too long, connection likely dead
+          console.warn('[Mobile] Connection may be dead after long background time');
+          this.attemptHealthCheck();
+        } else {
+          // Brief background, check if peer is still alive
+          this.checkPeerHealth();
+        }
+      }
+    });
+
+    // iOS-specific: pagehide/pageshow events
+    window.addEventListener('pagehide', () => {
+      console.log('[Mobile] Page hiding (iOS)');
+      this.pageHiddenTime = Date.now();
+    });
+
+    window.addEventListener('pageshow', () => {
+      const backgroundDuration = Date.now() - this.pageHiddenTime;
+      console.log(`[Mobile] Page showing (iOS), was hidden ${backgroundDuration}ms`);
+      if (backgroundDuration > this.MAX_BACKGROUND_TIME) {
+        this.attemptHealthCheck();
+      }
+    });
+  }
+
+  /**
+   * Check if peer connection is still healthy
+   */
+  private checkPeerHealth(): void {
+    if (!this.peer) return;
+
+    if (this.peer.destroyed) {
+      console.error('[Mobile] Peer was destroyed while in background');
+      this.attemptHealthCheck();
+    } else if (this.peer.disconnected) {
+      console.warn('[Mobile] Peer disconnected while in background, reconnecting...');
+      this.peer.reconnect();
+    } else {
+      console.log('[Mobile] Peer connection healthy');
+    }
+  }
+
+  /**
+   * Notify that peer connection may be unhealthy after background
+   */
+  private attemptHealthCheck(): void {
+    console.log('[Mobile] Connection health check after long background time');
+    // For host: notify UI that connection might be unstable
+    if (this.isHost && this.onDisconnectedCallback) {
+      // Don't fully disconnect, but warn that new clients might not connect
+      console.warn('[Mobile] Host was in background too long, room may be unstable');
+    }
+  }
+
   public disconnect(): void {
+    // Clear keep-alive timer
+    if (this.keepAliveInterval !== null) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+    }
+
     this.isReconnecting = false;
     this.reconnectAttempts = this.maxReconnectAttempts;
     this.connections.forEach((connection) => connection.close());

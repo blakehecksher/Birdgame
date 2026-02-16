@@ -30,6 +30,7 @@ import {
   stringifyPersonalBests,
   updatePersonalBest,
 } from '../ui/personalBests';
+import { NetworkDebugPanel, DebugPanelMode } from '../debug/NetworkDebugPanel';
 
 /**
  * Main game orchestrator
@@ -55,6 +56,7 @@ export class Game {
   private lobbyUI: LobbyUI;
   private scoreUI: ScoreUI;
   private leaderboard: LeaderboardService;
+  private debugPanel: NetworkDebugPanel | null = null;
 
   // Players
   private localPlayer: Player | null = null;
@@ -73,12 +75,9 @@ export class Game {
 
   // State
   private isGameStarted: boolean = false;
-  private lastReconcileTime: number = 0;
+  // Phase 1: Removed lastReconcileTime (now runs every frame)
   private worldSeed: number = 1;
-  private debugConsoleEl: HTMLElement | null = null;
-  private lastDebugRefreshTime: number = 0;
-  private debugConsoleVisible: boolean = true;
-  private readonly debugToggleHandler: (event: KeyboardEvent) => void;
+  private currentReconciliationError: number = 0; // Phase 1: Track for debug panel
 
   // Audio
   private ambientLoopId: string | null = null;
@@ -112,6 +111,13 @@ export class Game {
     this.lobbyUI = new LobbyUI();
     this.scoreUI = new ScoreUI();
     this.leaderboard = new LeaderboardService();
+    this.debugPanel = new NetworkDebugPanel();
+
+    // Set up debug panel mode change callback
+    this.debugPanel.onModeChange((mode) => {
+      this.onDebugModeChange(mode);
+    });
+
     this.personalBests = this.loadPersonalBests();
     this.lobbyUI.show();
     this.lobbyUI.renderPersonalBests(this.personalBests);
@@ -133,24 +139,18 @@ export class Game {
         window.location.reload();
       });
     }
-    this.debugConsoleEl = document.getElementById('debug-console');
-    this.debugToggleHandler = (event: KeyboardEvent) => {
-      if (event.code !== 'F3') return;
-      event.preventDefault();
-      this.debugConsoleVisible = !this.debugConsoleVisible;
-      this.applyDebugConsoleVisibility();
-    };
-    window.addEventListener('keydown', this.debugToggleHandler);
-
     // Initialize audio system
     AudioManager.init();
     this.setupVolumeControls();
 
     // If room code is in URL, prefill join screen but let player confirm name first.
     const params = new URLSearchParams(window.location.search);
-    const roomCode = params.get('room');
-    if (roomCode) {
-      this.lobbyUI.prefillJoinRoomCode(roomCode.replace(/^birdgame-/i, '').toUpperCase());
+    const roomParam = params.get('room');
+    if (roomParam) {
+      const roomCode = this.normalizeRoomCode(roomParam);
+      if (roomCode) {
+        this.lobbyUI.prefillJoinRoomCode(roomCode);
+      }
     }
 
     // Start render loop (even before game starts)
@@ -159,15 +159,22 @@ export class Game {
   }
 
   /**
-   * Generate a short room code (6 chars, no ambiguous characters)
+   * Generate a short room code (6 digits).
    */
   private generateRoomCode(): string {
-    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    const chars = '0123456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
     return code;
+  }
+
+  /**
+   * Normalize room code input to digits only.
+   */
+  private normalizeRoomCode(raw: string): string {
+    return raw.replace(/^birdgame-/i, '').replace(/\D/g, '').slice(0, 6);
   }
 
   /**
@@ -420,10 +427,14 @@ export class Game {
       this.lobbyUI.showConnecting();
 
       // Normalize accepted inputs:
-      // - "ABC123"
-      // - "birdgame-ABC123" (any case)
-      const rawInput = hostPeerId.trim();
-      const roomCode = rawInput.replace(/^birdgame-/i, '').toUpperCase();
+      // - "123456"
+      // - "birdgame-123456" (any case)
+      const roomCode = this.normalizeRoomCode(hostPeerId.trim());
+      if (roomCode.length !== 6) {
+        this.lobbyUI.showError('Room code must be 6 digits.');
+        this.lobbyUI.show();
+        return;
+      }
       const fullPeerId = `birdgame-${roomCode}`;
 
       // Initialize peer connection as client
@@ -596,7 +607,6 @@ export class Game {
     if (connStatus) connStatus.style.display = 'flex';
     const volumeBtn = document.getElementById('volume-btn');
     if (volumeBtn) volumeBtn.style.display = 'flex';
-    this.applyDebugConsoleVisibility();
     if (!this.inputManager.isMobile) {
       this.inputManager.setPointerLockEnabled(false);
     }
@@ -664,6 +674,7 @@ export class Game {
     // Update game
     if (this.isGameStarted) {
       this.update(cappedDelta);
+      this.updateDebugStats(cappedDelta);
     }
 
     // Always render
@@ -800,8 +811,24 @@ export class Game {
     // Apply flight controls to local player
     this.flightController.applyInput(this.localPlayer, input, deltaTime);
 
-    // Update local player
-    this.localPlayer.update(deltaTime);
+    // Update local player position from velocity
+    this.localPlayer.position.add(this.localPlayer.velocity.clone().multiplyScalar(deltaTime));
+
+    // Phase 1B: Update mesh BEFORE reconciliation (keeps camera smooth)
+    this.localPlayer.mesh.position.copy(this.localPlayer.position);
+    this.localPlayer.applyMeshRotation();
+
+    // Handle eating timer (from player.update())
+    if (this.localPlayer.isEating) {
+      this.localPlayer.eatingTimer -= deltaTime;
+      if (this.localPlayer.eatingTimer <= 0) {
+        this.localPlayer.isEating = false;
+        this.localPlayer.eatingTimer = 0;
+      }
+    }
+
+    // NOTE: We don't call this.localPlayer.update() because it would
+    // update the mesh AFTER reconciliation, causing camera jitter
 
     // Check building collisions for local player
     if (this.environment) {
@@ -1053,88 +1080,6 @@ export class Game {
           : (this.peerConnection.getIsReconnecting() ? 'Reconnecting...' : 'Disconnected');
       }
     }
-
-    this.updateDebugConsole();
-  }
-
-  private updateDebugConsole(): void {
-    if (!this.debugConsoleEl) return;
-    if (!this.gameState || !this.localPlayer) {
-      this.debugConsoleEl.textContent = '';
-      return;
-    }
-
-    const now = performance.now();
-    if (now - this.lastDebugRefreshTime < 100) return;
-    this.lastDebugRefreshTime = now;
-
-    const localState = this.gameState.getLocalPlayer();
-    const localError = localState
-      ? localState.position.distanceTo(this.localPlayer.position)
-      : 0;
-    const remoteErrors = Array.from(this.remotePlayers.entries())
-      .map(([peerId, remotePlayer]) => {
-        const remoteState = this.gameState!.players.get(peerId);
-        if (!remoteState) return 0;
-        return remoteState.position.distanceTo(remotePlayer.position);
-      });
-    const maxRemoteError = remoteErrors.length > 0 ? Math.max(...remoteErrors) : 0;
-
-    let foodMismatch = 0;
-    let missingLocalFood = 0;
-    let orphanLocalFood = 0;
-    if (this.foodSpawner) {
-      const localFoods = this.foodSpawner.getFoods();
-      const localFoodMap = new Map(localFoods.map((food) => [food.id, food]));
-      for (const [id, foodState] of this.gameState.foods) {
-        const localFood = localFoodMap.get(id);
-        if (!localFood) {
-          missingLocalFood += 1;
-          continue;
-        }
-        const stateRespawnTimer = foodState.respawnTimer ?? 0;
-        if (
-          localFood.exists !== foodState.exists ||
-          Math.abs(localFood.respawnTimer - stateRespawnTimer) > 0.25
-        ) {
-          foodMismatch += 1;
-        }
-      }
-      for (const localFood of localFoods) {
-        if (!this.gameState.foods.has(localFood.id)) {
-          orphanLocalFood += 1;
-        }
-      }
-    }
-
-    const connectionState = this.peerConnection?.isConnected()
-      ? 'connected'
-      : this.peerConnection?.getIsReconnecting()
-        ? 'reconnecting'
-        : 'disconnected';
-
-    const lines: string[] = [
-      `DEBUG (${this.gameState.isHost ? 'HOST' : 'CLIENT'})`,
-      `Conn: ${connectionState}`,
-      `Round: ${this.gameState.roundNumber} ${this.gameState.roundState}`,
-      `Local ${this.localPlayer.role} p:${this.formatVec3(this.localPlayer.position)} v:${this.localPlayer.velocity.length().toFixed(2)}`,
-      `Remotes: ${this.remotePlayers.size}`,
-      `PosErr L:${localError.toFixed(2)} Rmax:${maxRemoteError.toFixed(2)}`,
-      `Food local:${this.foodSpawner?.getFoods().length ?? 0} state:${this.gameState.foods.size}`,
-      `Food mismatch:${foodMismatch} missing:${missingLocalFood} orphan:${orphanLocalFood}`,
-      `NPC local:${this.npcSpawner?.getNPCs().length ?? 0} state:${this.gameState.npcs.size}`,
-    ];
-
-    this.debugConsoleEl.textContent = lines.join('\n');
-  }
-
-  private applyDebugConsoleVisibility(): void {
-    if (!this.debugConsoleEl) return;
-    this.debugConsoleEl.style.display = this.isGameStarted && this.debugConsoleVisible ? 'block' : 'none';
-  }
-
-  private formatVec3(value: THREE.Vector3): string {
-    return `${value.x.toFixed(1)},${value.y.toFixed(1)},${value.z.toFixed(1)}`;
   }
 
   /**
@@ -1838,39 +1783,49 @@ export class Game {
 
   /**
    * Reconcile local predicted state with host-authoritative local state.
+   * Phase 1A: Only reconcile internal state, not visual mesh (prevents camera jitter)
    */
   private reconcileLocalPlayerWithAuthority(deltaTime: number): void {
     if (!this.gameState || this.gameState.isHost || !this.localPlayer || !this.networkManager) return;
 
-    const now = performance.now();
-    if (now - this.lastReconcileTime < 33) return; // ~30Hz correction
-
+    // Phase 1: Run every frame (removed 30Hz throttle)
     const authoritative = this.networkManager.getLocalAuthoritativeState();
     if (!authoritative) return;
 
     // Ignore stale snapshots.
     if (Date.now() - authoritative.timestamp > 300) return;
 
-    const hardSnapDistance = 5.0;
-    const softStartDistance = 0.4;
+    // Phase 1: Use constants from config
+    const hardSnapDistance = GAME_CONFIG.HARD_SNAP_THRESHOLD;
+    const softStartDistance = GAME_CONFIG.RECONCILIATION_DEAD_ZONE;
     const error = this.localPlayer.position.distanceTo(authoritative.position);
 
+    // Track for debug panel (picked up by updateDebugStats)
+    this.currentReconciliationError = error;
+
     if (error > hardSnapDistance) {
+      // Hard snap (server correction needed immediately)
       this.localPlayer.position.copy(authoritative.position);
       this.localPlayer.velocity.copy(authoritative.velocity);
       this.localPlayer.rotation.copy(authoritative.rotation);
+
+      // Hard snap also updates mesh (large desync)
+      this.localPlayer.mesh.position.copy(this.localPlayer.position);
+      this.localPlayer.applyMeshRotation();
     } else if (error > softStartDistance) {
-      const alpha = Math.min(0.22, deltaTime * 10);
+      // Phase 1A: Soft correction only on internal state (not mesh)
+      // This prevents camera jitter while keeping collision accuracy
+      const alpha = Math.min(GAME_CONFIG.RECONCILIATION_ALPHA_MAX, deltaTime * GAME_CONFIG.RECONCILIATION_ALPHA_SCALE);
       this.localPlayer.position.lerp(authoritative.position, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
       this.localPlayer.rotation.x = THREE.MathUtils.lerp(this.localPlayer.rotation.x, authoritative.rotation.x, alpha);
       this.localPlayer.rotation.y = this.lerpAngle(this.localPlayer.rotation.y, authoritative.rotation.y, alpha);
       this.localPlayer.rotation.z = THREE.MathUtils.lerp(this.localPlayer.rotation.z, authoritative.rotation.z, alpha);
-    }
 
-    this.localPlayer.mesh.position.copy(this.localPlayer.position);
-    this.localPlayer.applyMeshRotation();
-    this.lastReconcileTime = now;
+      // NOTE: Mesh position NOT updated during soft reconciliation
+      // Mesh position is updated by player movement code (smooth client prediction)
+    }
+    // else: error < dead zone, no correction needed
   }
 
   private lerpAngle(current: number, target: number, alpha: number): number {
@@ -2188,10 +2143,75 @@ export class Game {
   }
 
   /**
+   * Update debug panel with current network stats
+   */
+  private updateDebugStats(deltaTime: number): void {
+    if (!this.debugPanel || !this.gameState) return;
+
+    const fps = deltaTime > 0 ? 1 / deltaTime : 60;
+
+    // Collect network stats (stub values for now, to be enhanced by NetworkManager)
+    const stats = {
+      rtt: 0,
+      jitter: 0,
+      packetLoss: 0,
+      fps: fps,
+      reconciliationError: this.currentReconciliationError, // Phase 1: Track actual error
+      interpolationBufferSize: 0,
+      interpolationUnderruns: 0,
+      extrapolationCount: 0,
+      tickRate: this.gameState.isHost ? 30 : 0,
+      isHost: this.gameState.isHost,
+      playerCount: this.gameState.players.size,
+    };
+
+    // Get stats from network manager if available
+    if (this.networkManager) {
+      const networkStats = this.networkManager.getDebugStats?.();
+      if (networkStats) {
+        Object.assign(stats, networkStats);
+      }
+    }
+
+    this.debugPanel.updateStats(stats);
+  }
+
+  /**
+   * Handle debug mode changes from debug panel
+   */
+  private onDebugModeChange(mode: DebugPanelMode): void {
+    const showHitboxes = mode === DebugPanelMode.STATS_AND_HITBOXES;
+
+    // Update local player
+    if (this.localPlayer) {
+      this.localPlayer.setCollisionDebugVisible(showHitboxes);
+    }
+
+    // Update all remote players
+    this.remotePlayers.forEach((player) => {
+      player.setCollisionDebugVisible(showHitboxes);
+    });
+
+    // Update all NPCs
+    if (this.npcSpawner) {
+      const npcs = this.npcSpawner.getNPCs();
+      npcs.forEach((npc) => {
+        npc.setCollisionDebugVisible(showHitboxes);
+      });
+    }
+  }
+
+  /**
+   * Check if collision hitboxes should be shown
+   */
+  public shouldShowCollisionHitboxes(): boolean {
+    return this.debugPanel?.getMode() === DebugPanelMode.STATS_AND_HITBOXES;
+  }
+
+  /**
    * Cleanup
    */
   public dispose(): void {
-    window.removeEventListener('keydown', this.debugToggleHandler);
     this.clearRoundCountdownState();
     if (this.ambientLoopId) AudioManager.stop(this.ambientLoopId);
     if (this.windLoopId) AudioManager.stop(this.windLoopId);
@@ -2206,5 +2226,6 @@ export class Game {
     if (this.npcSpawner) this.npcSpawner.dispose();
     if (this.environment) this.environment.dispose();
     if (this.peerConnection) this.peerConnection.disconnect();
+    if (this.debugPanel) this.debugPanel.destroy();
   }
 }
