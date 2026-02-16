@@ -972,16 +972,32 @@
         top: 20px;
         right: 60px;
         display: none;
-        align-items: center;
-        gap: 6px;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 3px;
         font-size: 12px;
         color: #aaa;
         text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
         pointer-events: none;
       }
 
+      #connection-main-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
       #connection-text {
         color: #d7e3ea;
+      }
+
+      #room-code-hud {
+        color: #98eb95;
+        font-family: 'Chakra Petch', 'Trebuchet MS', sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        display: none;
       }
 
       #connection-dot {
@@ -1344,7 +1360,7 @@
         #event-feed { bottom: 220px; }
       }
     </style>
-    <script type="module" crossorigin src="/Birdgame/assets/index-BBducTiM.js"></script>
+    <script type="module" crossorigin src="/Birdgame/assets/index-DJDzc8B2.js"></script>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
@@ -1485,8 +1501,11 @@
 
       <!-- Connection Status -->
       <div id="connection-status">
-        <span id="connection-dot"></span>
-        <span id="connection-text">Connecting...</span>
+        <div id="connection-main-row">
+          <span id="connection-dot"></span>
+          <span id="connection-text">Connecting...</span>
+        </div>
+        <span id="room-code-hud"></span>
       </div>
 
       <!-- Round Countdown -->
