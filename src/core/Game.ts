@@ -929,7 +929,7 @@ export class Game {
       this.localVisualReconciliationOffset.set(0, 0, 0);
     } else {
       const damping = this.inputManager.isMobile
-        ? GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING * 1.6
+        ? GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING * 1.25
         : GAME_CONFIG.RECONCILIATION_VISUAL_OFFSET_DAMPING;
       const decay = Math.min(1, frameDelta * damping);
       this.localVisualReconciliationOffset.multiplyScalar(1 - decay);

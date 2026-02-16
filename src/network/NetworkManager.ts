@@ -29,6 +29,15 @@ export class NetworkManager {
   private tickRate: number;
   private lastWorldSyncTime: number = 0;
   private worldSyncIntervalMs: number = 100;
+  private interpolationBufferTimeMs: number = GAME_CONFIG.STATE_BUFFER_TIME;
+  private stateReorderGraceTimeMs: number = GAME_CONFIG.STATE_REORDER_GRACE_TIME;
+  private expectedStateSequence: number | null = null;
+  private pendingStateSyncMessages: Map<number, {
+    message: StateSyncMessage;
+    receivedAt: number;
+  }> = new Map();
+  private missingStateSequenceSince: number | null = null;
+  private stateReorderTimer: ReturnType<typeof setTimeout> | null = null;
 
   // State buffer for interpolation (client only)
   private stateBuffer: Array<StateSyncMessage & { receivedAt: number }> = [];
@@ -86,6 +95,22 @@ export class NetworkManager {
       `[NetworkManager] Initialized with ${recommendedTickRateHz}Hz tick rate ` +
       `(${this.tickRate.toFixed(1)}ms interval) for ${DeviceDetector.getDeviceTypeString()} device`
     );
+
+    // Step 2 tuning: slightly larger interpolation delay for mobile clients only.
+    if (!this.gameState.isHost && DeviceDetector.isMobile()) {
+      this.interpolationBufferTimeMs =
+        GAME_CONFIG.STATE_BUFFER_TIME + GAME_CONFIG.MOBILE_STATE_BUFFER_EXTRA;
+      this.stateReorderGraceTimeMs =
+        GAME_CONFIG.STATE_REORDER_GRACE_TIME + GAME_CONFIG.MOBILE_STATE_REORDER_GRACE_EXTRA;
+      console.log(
+        `[NetworkManager] Mobile interpolation buffer: ${this.interpolationBufferTimeMs}ms ` +
+        `(base ${GAME_CONFIG.STATE_BUFFER_TIME}ms + ${GAME_CONFIG.MOBILE_STATE_BUFFER_EXTRA}ms)`
+      );
+      console.log(
+        `[NetworkManager] Mobile state reorder grace: ${this.stateReorderGraceTimeMs}ms ` +
+        `(base ${GAME_CONFIG.STATE_REORDER_GRACE_TIME}ms + ${GAME_CONFIG.MOBILE_STATE_REORDER_GRACE_EXTRA}ms)`
+      );
+    }
 
     // Register message handler
     this.peerConnection.onMessage((message, peerId) => this.handleMessage(message, peerId));
@@ -203,28 +228,110 @@ export class NetworkManager {
   private handleStateSync(message: StateSyncMessage): void {
     if (this.gameState.isHost) return;
 
+    const receivedAt = performance.now();
     const incomingSequence = typeof message.sequence === 'number' ? message.sequence : null;
-    if (incomingSequence !== null && incomingSequence <= this.lastReceivedStateSequence) {
+
+    // Backward-compatible fallback for legacy/sequence-less snapshots.
+    if (incomingSequence === null) {
+      this.pushStateSnapshot(message, receivedAt, receivedAt);
+      this.applyStateSync(message, receivedAt);
       return;
     }
-    if (incomingSequence !== null) {
-      this.lastReceivedStateSequence = incomingSequence;
+
+    if (this.expectedStateSequence === null) {
+      this.expectedStateSequence = this.lastReceivedStateSequence >= 0
+        ? this.lastReceivedStateSequence + 1
+        : incomingSequence;
     }
 
-    const receivedAt = performance.now();
+    if (incomingSequence < this.expectedStateSequence) {
+      return;
+    }
 
+    if (!this.pendingStateSyncMessages.has(incomingSequence)) {
+      this.pendingStateSyncMessages.set(incomingSequence, {
+        message,
+        receivedAt,
+      });
+    }
+
+    this.drainPendingStateSyncQueue(receivedAt);
+  }
+
+  private pushStateSnapshot(message: StateSyncMessage, receivedAt: number, now: number): void {
     // Add to buffer for interpolation
     this.stateBuffer.push({
       ...message,
       receivedAt,
     });
+    this.stateBuffer.sort((a, b) => a.receivedAt - b.receivedAt);
 
     // Remove old states (older than 1 second)
-    const cutoff = receivedAt - 1000;
+    const cutoff = now - 1000;
     this.stateBuffer = this.stateBuffer.filter((s) => s.receivedAt > cutoff);
+  }
 
-    // Apply immediate state update (we can add interpolation later if needed)
-    this.applyStateSync(message, receivedAt);
+  private scheduleStateReorderTimer(now: number): void {
+    if (this.stateReorderTimer !== null) return;
+    if (this.missingStateSequenceSince === null) return;
+
+    const elapsed = now - this.missingStateSequenceSince;
+    const delay = Math.max(1, this.stateReorderGraceTimeMs - elapsed);
+
+    this.stateReorderTimer = setTimeout(() => {
+      this.stateReorderTimer = null;
+      this.drainPendingStateSyncQueue(performance.now());
+    }, delay);
+  }
+
+  private clearStateReorderTimer(): void {
+    if (this.stateReorderTimer === null) return;
+    clearTimeout(this.stateReorderTimer);
+    this.stateReorderTimer = null;
+  }
+
+  private drainPendingStateSyncQueue(now: number): void {
+    if (this.expectedStateSequence === null) return;
+
+    // Apply any contiguous queued snapshots in sequence order.
+    while (true) {
+      const pending = this.pendingStateSyncMessages.get(this.expectedStateSequence);
+      if (!pending) break;
+
+      this.pendingStateSyncMessages.delete(this.expectedStateSequence);
+      this.lastReceivedStateSequence = this.expectedStateSequence;
+      this.expectedStateSequence += 1;
+      this.missingStateSequenceSince = null;
+
+      this.pushStateSnapshot(pending.message, pending.receivedAt, now);
+      this.applyStateSync(pending.message, pending.receivedAt);
+    }
+
+    if (this.pendingStateSyncMessages.size === 0) {
+      this.missingStateSequenceSince = null;
+      this.clearStateReorderTimer();
+      return;
+    }
+
+    if (this.missingStateSequenceSince === null) {
+      this.missingStateSequenceSince = now;
+      this.scheduleStateReorderTimer(now);
+      return;
+    }
+
+    if ((now - this.missingStateSequenceSince) >= this.stateReorderGraceTimeMs) {
+      const nextAvailableSequence = Math.min(...Array.from(this.pendingStateSyncMessages.keys()));
+      if (nextAvailableSequence > this.expectedStateSequence) {
+        this.expectedStateSequence = nextAvailableSequence;
+      }
+
+      this.missingStateSequenceSince = null;
+      this.clearStateReorderTimer();
+      this.drainPendingStateSyncQueue(now);
+      return;
+    }
+
+    this.scheduleStateReorderTimer(now);
   }
 
   /**
@@ -577,7 +684,7 @@ export class NetworkManager {
 
     if (snapshots.length === 0) return null;
 
-    const renderTimestamp = performance.now() - GAME_CONFIG.STATE_BUFFER_TIME;
+    const renderTimestamp = performance.now() - this.interpolationBufferTimeMs;
 
     // If render time is before our buffer, snap to earliest known snapshot.
     if (renderTimestamp <= snapshots[0].timestamp) {

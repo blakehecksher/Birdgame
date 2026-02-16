@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { GameState } = require('../../.test-out/core/GameState.js');
 const { NetworkManager } = require('../../.test-out/network/NetworkManager.js');
 const { MessageType, createMessage } = require('../../.test-out/network/messages.js');
-const { PlayerRole } = require('../../.test-out/config/constants.js');
+const { PlayerRole, GAME_CONFIG } = require('../../.test-out/config/constants.js');
 
 class FakePeerConnection {
   constructor() {
@@ -38,6 +38,10 @@ function makePlayerSnapshot(role, position) {
     weight: role === PlayerRole.PIGEON ? 1 : undefined,
     energy: role === PlayerRole.HAWK ? 100 : undefined,
   };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test('host caches input per peer and consumes mouse deltas independently', () => {
@@ -339,6 +343,106 @@ test('client ignores out-of-order state sync snapshots by sequence', () => {
   const interpolated = networkManager.getInterpolatedRemoteState('host-1');
   assert.ok(interpolated);
   assert.equal(interpolated.position.x, 100);
+});
+
+test('client waits briefly for missing state sequence before applying newer snapshot', () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 1,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 1, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 10, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 3,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 3, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 30, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  // Sequence 3 should be held until sequence 2 arrives.
+  assert.equal(gameState.players.get('host-1').position.x, 10);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 2,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 2, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 20, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  assert.equal(gameState.players.get('host-1').position.x, 30);
+  const authoritative = networkManager.getLocalAuthoritativeState();
+  assert.ok(authoritative);
+  assert.equal(authoritative.position.x, 3);
+});
+
+test('client skips missing state sequence after reorder grace timeout', async () => {
+  const gameState = new GameState(false, 'client-1');
+  gameState.addPlayer('client-1', PlayerRole.HAWK);
+
+  const peerConnection = new FakePeerConnection();
+  const networkManager = new NetworkManager(peerConnection, gameState);
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 1,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 1, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 10, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  peerConnection.emit(
+    createMessage(MessageType.STATE_SYNC, {
+      sequence: 3,
+      players: {
+        'client-1': makePlayerSnapshot(PlayerRole.HAWK, { x: 3, y: 0, z: 0 }),
+        'host-1': makePlayerSnapshot(PlayerRole.PIGEON, { x: 30, y: 0, z: 0 }),
+      },
+      foods: [],
+      npcs: [],
+    }),
+    'host-1'
+  );
+
+  // Not applied yet because sequence 2 is missing.
+  assert.equal(gameState.players.get('host-1').position.x, 10);
+
+  // After grace period, sequence 3 should be applied even if sequence 2 never arrives.
+  await sleep(GAME_CONFIG.STATE_REORDER_GRACE_TIME + 50);
+
+  assert.equal(gameState.players.get('host-1').position.x, 30);
+  const authoritative = networkManager.getLocalAuthoritativeState();
+  assert.ok(authoritative);
+  assert.equal(authoritative.position.x, 3);
 });
 
 test('resetRemoteInput clears host input cache', () => {
