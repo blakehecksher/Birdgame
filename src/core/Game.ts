@@ -2024,9 +2024,24 @@ export class Game {
     if (!authoritative) return;
 
     // Ignore stale snapshots.
-    if (performance.now() - authoritative.timestamp > 300) return;
+    const snapshotAgeMs = performance.now() - authoritative.timestamp;
+    if (snapshotAgeMs > 300) return;
 
+    // Forward-project the authoritative position by the snapshot age so we
+    // compare against where the host expects us to be *now*, not where we were
+    // when the packet was sent.  Without this, normal flight speed creates a
+    // constant apparent "error" that the reconciler tries to correct every
+    // frame, causing the low-level wobble seen by joining players.
+    //
+    // On mobile the snapshot velocity is less reliable (higher latency, more
+    // frequent direction changes) so we cap projection time aggressively to
+    // prevent the dead-reckoning from overshooting and causing oscillation.
     const isMobileClient = this.inputManager.isMobile;
+    const projectionCapMs = isMobileClient ? 40 : 150;
+    const snapshotAgeSeconds = Math.min(snapshotAgeMs, projectionCapMs) / 1000;
+    const projectedAuthPos = authoritative.position.clone()
+      .addScaledVector(authoritative.velocity, snapshotAgeSeconds);
+
     const hardSnapDistance = GAME_CONFIG.HARD_SNAP_THRESHOLD;
     const softStartDistance = isMobileClient
       ? Math.min(GAME_CONFIG.RECONCILIATION_DEAD_ZONE, GAME_CONFIG.RECONCILIATION_MOBILE_DEAD_ZONE)
@@ -2037,14 +2052,14 @@ export class Game {
     const alphaScale = isMobileClient
       ? Math.max(GAME_CONFIG.RECONCILIATION_ALPHA_SCALE, GAME_CONFIG.RECONCILIATION_MOBILE_ALPHA_SCALE)
       : GAME_CONFIG.RECONCILIATION_ALPHA_SCALE;
-    const error = this.localPlayer.position.distanceTo(authoritative.position);
+    const error = this.localPlayer.position.distanceTo(projectedAuthPos);
 
     // Track for debug panel
     this.currentReconciliationError = error;
 
     if (error > hardSnapDistance) {
       // Hard snap — teleport to authoritative state
-      this.localPlayer.position.copy(authoritative.position);
+      this.localPlayer.position.copy(projectedAuthPos);
       this.localPlayer.velocity.copy(authoritative.velocity);
       this.localPlayer.rotation.copy(authoritative.rotation);
       this.localVisualReconciliationOffset.set(0, 0, 0);
@@ -2055,7 +2070,7 @@ export class Game {
       // Soft position/velocity correction
       const alpha = Math.min(alphaMax, deltaTime * alphaScale);
       this.reconciliationScratch.copy(this.localPlayer.position);
-      this.localPlayer.position.lerp(authoritative.position, alpha);
+      this.localPlayer.position.lerp(projectedAuthPos, alpha);
       this.localPlayer.velocity.lerp(authoritative.velocity, alpha);
 
       // Visual offset absorbs the position correction for smooth rendering
