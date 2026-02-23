@@ -573,7 +573,7 @@ export class Game {
     this.sceneManager.scene.add(this.localPlayer.mesh);
 
     if (this.gameState.isHost) {
-      const remotePeerIds = this.peerConnection.getRemotePeerIds().sort();
+      const remotePeerIds = this.peerConnection.getRemotePeerIds();
       remotePeerIds.forEach((peerId, index) => {
         const remoteSpawnPos = this.getRemoteSpawnPosition(index, remotePeerIds.length);
         const state = this.gameState!.players.get(peerId)
@@ -1304,7 +1304,7 @@ export class Game {
     this.gameState.scores.hawk.killTimes.push(survivalTime);
 
     // End the round
-    this.nextPigeonPeerId = killerPeerId;
+    this.nextPigeonPeerId = this.gameState.chooseNextPigeonAfterHawkWin(killerPeerId, victimPeerId);
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
@@ -1352,7 +1352,7 @@ export class Game {
     this.gameState.scores.pigeon.roundsWon += 1;
 
     // End the round
-    this.nextPigeonPeerId = pigeon.peerId;
+    this.nextPigeonPeerId = this.gameState.chooseNextPigeonAfterPigeonWin(pigeon.peerId);
     this.gameState.endRound();
     this.networkManager?.resetRemoteInput();
     this.inputManager.resetInputState();
@@ -1439,9 +1439,9 @@ export class Game {
       return;
     }
 
-    // Choose next pigeon: killing hawk becomes pigeon, otherwise keep prior pigeon.
+    // Choose next pigeon from the round result policy captured at round end.
     let nextPigeonPeerId = this.nextPigeonPeerId;
-    if (!nextPigeonPeerId) {
+    if (!nextPigeonPeerId || !this.gameState.players.has(nextPigeonPeerId)) {
       const currentPigeon = Array.from(this.gameState.players.values()).find((p) => p.role === PlayerRole.PIGEON);
       nextPigeonPeerId = currentPigeon?.peerId ?? this.gameState.localPeerId;
     }

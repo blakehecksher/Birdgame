@@ -24,3 +24,53 @@ test('assignRolesForNextRound keeps one pigeon and turns others into hawks', () 
   assert.equal(gameState.players.get('peer-a').weight, undefined);
   assert.equal(gameState.players.get('peer-a').energy, GAME_CONFIG.HAWK_INITIAL_ENERGY);
 });
+
+test('chooseNextPigeonAfterHawkWin alternates roles in a 2-player match', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+
+  const nextPigeon = gameState.chooseNextPigeonAfterHawkWin('peer-a', 'host');
+
+  assert.equal(nextPigeon, 'peer-a');
+});
+
+test('chooseNextPigeonAfterPigeonWin alternates roles in a 2-player match', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+
+  const nextPigeon = gameState.chooseNextPigeonAfterPigeonWin('host');
+  const secondNextPigeon = gameState.chooseNextPigeonAfterPigeonWin('peer-a');
+
+  assert.equal(nextPigeon, 'peer-a');
+  assert.equal(secondNextPigeon, 'host');
+});
+
+test('chooseNextPigeonAfterHawkWin makes the killer pigeon in 3+ player match', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+  gameState.addPlayer('peer-b', PlayerRole.HAWK);
+
+  const nextPigeon = gameState.chooseNextPigeonAfterHawkWin('peer-b', 'host');
+
+  assert.equal(nextPigeon, 'peer-b');
+});
+
+test('chooseNextPigeonAfterPigeonWin rotates by join order in 3+ player match', () => {
+  const gameState = new GameState(true, 'host');
+  gameState.addPlayer('host', PlayerRole.PIGEON);
+  gameState.addPlayer('peer-a', PlayerRole.HAWK);
+  gameState.addPlayer('peer-b', PlayerRole.HAWK);
+
+  const first = gameState.chooseNextPigeonAfterPigeonWin('host');
+  const second = gameState.chooseNextPigeonAfterPigeonWin('host');
+  const third = gameState.chooseNextPigeonAfterPigeonWin('peer-a');
+  const fourth = gameState.chooseNextPigeonAfterPigeonWin('peer-b');
+
+  assert.equal(first, 'host');
+  assert.equal(second, 'peer-a');
+  assert.equal(third, 'peer-b');
+  assert.equal(fourth, 'host');
+});

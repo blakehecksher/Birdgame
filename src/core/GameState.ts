@@ -89,6 +89,7 @@ export class GameState {
     pigeon: { totalWeight: 0, roundsWon: 0 },
     hawk: { killTimes: [], roundsWon: 0 },
   };
+  private pigeonWinRotationIndex: number = 0;
 
   constructor(isHost: boolean, localPeerId: string) {
     this.isHost = isHost;
@@ -173,6 +174,63 @@ export class GameState {
       player.weight = player.role === PlayerRole.PIGEON ? GAME_CONFIG.PIGEON_INITIAL_WEIGHT : undefined;
       player.energy = player.role === PlayerRole.HAWK ? GAME_CONFIG.HAWK_INITIAL_ENERGY : undefined;
     });
+  }
+
+  /**
+   * Select the next pigeon after a hawk kill.
+   * - 2 players: always swap roles.
+   * - 3+ players: killer becomes pigeon.
+   */
+  public chooseNextPigeonAfterHawkWin(killerPeerId: string, victimPeerId: string): string {
+    const joinedPeerIds = this.getJoinedPeerIds();
+    if (joinedPeerIds.length <= 1) {
+      return joinedPeerIds[0] ?? killerPeerId;
+    }
+
+    if (joinedPeerIds.length === 2) {
+      return this.getOtherPeerId(victimPeerId) ?? joinedPeerIds[0];
+    }
+
+    if (this.players.has(killerPeerId)) {
+      return killerPeerId;
+    }
+
+    const fallbackHawk = joinedPeerIds.find((peerId) => peerId !== victimPeerId);
+    return fallbackHawk ?? joinedPeerIds[0];
+  }
+
+  /**
+   * Select the next pigeon after a pigeon survival.
+   * - 2 players: always swap roles.
+   * - 3+ players: rotate through join order on each pigeon win.
+   */
+  public chooseNextPigeonAfterPigeonWin(currentPigeonPeerId: string): string {
+    const joinedPeerIds = this.getJoinedPeerIds();
+    if (joinedPeerIds.length <= 1) {
+      return joinedPeerIds[0] ?? currentPigeonPeerId;
+    }
+
+    if (joinedPeerIds.length === 2) {
+      return this.getOtherPeerId(currentPigeonPeerId) ?? joinedPeerIds[0];
+    }
+
+    const rotationSlot = this.pigeonWinRotationIndex % joinedPeerIds.length;
+    const nextPigeonPeerId = joinedPeerIds[rotationSlot];
+    this.pigeonWinRotationIndex += 1;
+    return nextPigeonPeerId;
+  }
+
+  private getJoinedPeerIds(): string[] {
+    return Array.from(this.players.keys());
+  }
+
+  private getOtherPeerId(peerId: string): string | null {
+    for (const candidatePeerId of this.getJoinedPeerIds()) {
+      if (candidatePeerId !== peerId) {
+        return candidatePeerId;
+      }
+    }
+    return null;
   }
 
   /**
